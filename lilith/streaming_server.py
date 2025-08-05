@@ -198,6 +198,10 @@ class StreamingState:
         self.significant_changes = []
         self.context_memory = []  # Remember recent context
         self.last_activity_type = None
+        # Enhanced stream selection
+        self.current_priority_stream = None
+        self.stream_switch_cooldown = 10  # seconds
+        self.last_stream_switch = 0
         
 state = StreamingState()
 
@@ -400,18 +404,11 @@ def capture_ai_screen():
                 frame = np.array(screenshot)
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
                 
-                # Resize for performance
-                height, width = frame.shape[:2]
-                if width > 1280:
-                    scale = 1280 / width
-                    new_width = int(width * scale)
-                    new_height = int(height * scale)
-                    frame = cv2.resize(frame, (new_width, new_height))
-                
+                # NO RESIZING - Preserve complete original dimensions for full vision
                 # Don't add overlay text
                 
-                # Convert to base64
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                # Convert to base64 with 100% JPEG quality for perfect image fidelity
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
                 jpg_as_text = base64.b64encode(buffer).decode('utf-8')
                 
                 with state.lock:
@@ -437,21 +434,26 @@ def capture_vtube_studio():
     
     while state.vtube_stream_enabled:
         try:
-            # Find VTube Studio window using Windows API
-            def enum_windows_callback(hwnd, windows):
-                if user32.IsWindowVisible(hwnd):
-                    length = user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        buff = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(hwnd, buff, length + 1)
-                        if "VTube Studio" in buff.value:
-                            windows.append(hwnd)
+            # Find VTube Studio window using Windows API - Simplified approach
+            windows = []
+            
+            def enum_windows_callback(hwnd, lParam):
+                """Simple callback that avoids LP_c_long issues."""
+                try:
+                    if user32.IsWindowVisible(hwnd):
+                        length = user32.GetWindowTextLengthW(hwnd)
+                        if length > 0:
+                            buff = ctypes.create_unicode_buffer(length + 1)
+                            user32.GetWindowTextW(hwnd, buff, length + 1)
+                            if "VTube Studio" in buff.value:
+                                windows.append(hwnd)
+                except:
+                    pass  # Ignore errors in individual window checks
                 return True
             
-            # Find VTube Studio window
-            windows = []
-            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
-            user32.EnumWindows(WNDENUMPROC(enum_windows_callback), ctypes.py_object(windows))
+            # Use simplified callback type
+            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            user32.EnumWindows(WNDENUMPROC(enum_windows_callback), 0)
             
             if windows:
                 hwnd = windows[0]
@@ -595,7 +597,7 @@ def handle_chat_message(data):
             'timestamp': datetime.now().isoformat()
         }, broadcast=True)
         
-        # --- Enhanced Vision System ---
+        # --- Enhanced Vision System with Intelligent Stream Selection ---
         # Get frames from multiple sources
         client_frame_data = data.get('client_frame')  # Frame sent with message
         ai_frame_data = data.get('ai_frame')  # AI's own screen if available
@@ -606,28 +608,19 @@ def handle_chat_message(data):
             if user.get('sharing_screen') and user.get('current_frame'):
                 user_frames.append({
                     'username': user['username'],
-                    'frame': user['current_frame']
+                    'frame': user['current_frame'],
+                    'sid': sid
                 })
         
-        # Create composite image from all available sources
+        # Intelligent stream selection
+        selected_frame = select_best_view_intelligent(client_frame_data, ai_frame_data, user_frames, username)
+        
+        # Create composite image from selected source
         composite_image = None
         try:
-            # Priority: Use client frame if available, otherwise use stored frames
-            if client_frame_data:
-                # Client sent a frame with the message
-                composite_image = create_composite_image(client_frame_data, ai_frame_data)
-            elif user_frames:
-                # Use the first available user stream
-                composite_image = create_composite_image(user_frames[0]['frame'], ai_frame_data)
-            elif ai_frame_data:
-                # Only AI screen available
-                composite_image = create_composite_image(None, ai_frame_data)
-            elif state.current_ai_frame:
-                # Use stored AI frame if nothing else
-                composite_image = create_composite_image(None, state.current_ai_frame)
-                
+            composite_image = selected_frame
         except Exception as e:
-            print(f"Error creating composite image: {e}")
+            print(f"Error processing selected frame: {e}")
         
         # Get active streams info for context
         active_streams = []
@@ -793,7 +786,85 @@ def handle_ai_stream_control(data):
         elif stream_type == 'vtube' and action in ['enable', 'disable']:
             handle_toggle_vtube({'enabled': action == 'enable'})
 
+def select_best_view_intelligent(client_frame, ai_frame, user_frames, requesting_username):
+    """Intelligently select the best view based on priority and activity."""
+    current_time = time.time()
+    
+    # Priority 1: Frame sent with message (highest priority)
+    if client_frame:
+        state.current_priority_stream = f"message_from_{requesting_username}"
+        state.last_stream_switch = current_time
+        # Decode and return the client frame directly
+        try:
+            img_bytes = base64.b64decode(client_frame)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+            return img
+        except Exception as e:
+            print(f"Error decoding client frame: {e}")
+    
+    # Priority 2: New user streams (if cooldown has passed)
+    if user_frames and (current_time - state.last_stream_switch) > state.stream_switch_cooldown:
+        # Check if this is a different user stream than current priority
+        newest_user = user_frames[0]  # First available user
+        new_stream_id = f"user_{newest_user['username']}"
+        
+        if state.current_priority_stream != new_stream_id:
+            state.current_priority_stream = new_stream_id
+            state.last_stream_switch = current_time
+            print(f"🔄 Switching view to {newest_user['username']}'s screen")
+            
+        # Return the current priority user frame
+        for user_frame in user_frames:
+            if f"user_{user_frame['username']}" == state.current_priority_stream:
+                try:
+                    img_bytes = base64.b64decode(user_frame['frame'])
+                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                    img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+                    return img
+                except Exception as e:
+                    print(f"Error decoding user frame: {e}")
+    
+    # Priority 3: Continue with current user stream if available
+    if state.current_priority_stream and state.current_priority_stream.startswith("user_"):
+        username = state.current_priority_stream.replace("user_", "")
+        for user_frame in user_frames:
+            if user_frame['username'] == username:
+                try:
+                    img_bytes = base64.b64decode(user_frame['frame'])
+                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                    img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+                    return img
+                except Exception as e:
+                    print(f"Error decoding priority user frame: {e}")
+    
+    # Priority 4: AI screen if available
+    if ai_frame:
+        state.current_priority_stream = "ai_screen"
+        try:
+            img_bytes = base64.b64decode(ai_frame)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+            return img
+        except Exception as e:
+            print(f"Error decoding AI frame: {e}")
+    
+    # Priority 5: Stored AI frame as fallback
+    if state.current_ai_frame:
+        state.current_priority_stream = "ai_screen_stored"
+        try:
+            img_bytes = base64.b64decode(state.current_ai_frame)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+            return img
+        except Exception as e:
+            print(f"Error decoding stored AI frame: {e}")
+    
+    # No frames available
+    return None
+
 def run_streaming_server(host='0.0.0.0', port=7861):
+
     """Run the streaming server."""
     print(f"🚀 Starting Lilith Streaming Server on {host}:{port}")
     
@@ -952,34 +1023,41 @@ def dynamic_screen_monitor():
                 time.sleep(5)
                 continue
             
-            # Get current frames from all sources
-            frames_to_analyze = []
-            contexts = []
-            
-            # Priority 1: AI's own screen
-            if state.ai_screen_enabled and state.current_ai_frame:
-                frames_to_analyze.append(state.current_ai_frame)
-                contexts.append("AI Screen")
-            
-            # Priority 2: Active user screens
+            # Use intelligent stream selection for monitoring too
+            user_frames = []
             for sid, user in state.active_users.items():
                 if user.get('sharing_screen') and user.get('current_frame'):
-                    frames_to_analyze.append(user['current_frame'])
-                    contexts.append(f"{user['username']}'s screen")
-                    break  # Use first available user screen
+                    user_frames.append({
+                        'username': user['username'],
+                        'frame': user['current_frame'],
+                        'sid': sid
+                    })
             
-            # Priority 3: VTube Studio if active
-            if not frames_to_analyze and state.vtube_stream_enabled and state.current_vtube_frame:
-                frames_to_analyze.append(state.current_vtube_frame)
-                contexts.append("VTube Studio")
+            # Get the best frame using our intelligent selection
+            best_frame_img = select_best_view_intelligent(None, state.current_ai_frame, user_frames, "monitoring_system")
             
-            if not frames_to_analyze:
+            if best_frame_img is None:
                 time.sleep(5)
                 continue
             
-            # Analyze the main frame
+            # Convert back to base64 for analysis
+            _, buffer = cv2.imencode('.jpg', best_frame_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            frame_b64 = base64.b64encode(buffer).decode('utf-8')
+            
+            # Determine context based on current priority stream
+            if state.current_priority_stream:
+                if state.current_priority_stream.startswith("user_"):
+                    context = f"{state.current_priority_stream.replace('user_', '')}'s screen"
+                elif "ai_screen" in state.current_priority_stream:
+                    context = "AI Screen"
+                else:
+                    context = "Unknown Stream"
+            else:
+                context = "Monitoring System"
+            
+            # Analyze the selected frame
             new_hash, changes = analyze_screen_changes(
-                frames_to_analyze[0], 
+                frame_b64, 
                 state.last_screen_hash
             )
             
@@ -989,14 +1067,12 @@ def dynamic_screen_monitor():
                 state.last_analysis_time = current_time
                 
                 # Create context for AI
-                change_context = f"[DYNAMIC OBSERVATION: Detected {', '.join(changes)} on {contexts[0]}]"
+                change_context = f"[DYNAMIC OBSERVATION: Detected {', '.join(changes)} on {context}]"
                 
                 # Generate AI reaction
                 try:
-                    # Decode the frame for AI analysis
-                    img_bytes = base64.b64decode(frames_to_analyze[0])
-                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-                    img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+                    # Use the already decoded frame
+                    img = best_frame_img
                     
                     # Get all active streams for context
                     active_streams = []
@@ -1016,7 +1092,7 @@ def dynamic_screen_monitor():
                             "observation_mode": True, 
                             "changes": changes,
                             "active_streams": active_streams,
-                            "observing": contexts[0]
+                            "observing": context
                         }
                     )
                     
@@ -1024,7 +1100,7 @@ def dynamic_screen_monitor():
                     socketio.emit('ai_observation', {
                         'message': response,
                         'context': changes,
-                        'source': contexts[0],
+                        'source': context,
                         'timestamp': datetime.now().isoformat()
                     })
                     
