@@ -1,0 +1,18 @@
+{
+  "name": "ab498_control_plugin",
+  "version": "0.1.1",
+  "description": "AB498 Computer Control plugin for LM Studio (keyboard & mouse).",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -w -p ."
+  },
+  "dependencies": {
+    "@lmstudio/sdk": "latest",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
