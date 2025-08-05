@@ -32,6 +32,14 @@ from .tools import (
 )
 from .lm_studio_connector import get_lm_studio_connector
 
+# Import diagnostics
+try:
+    from .diagnostics import run_startup_diagnostic
+    DIAGNOSTICS_AVAILABLE = True
+except ImportError:
+    DIAGNOSTICS_AVAILABLE = False
+    run_startup_diagnostic = None
+
 # Try MCP manager (optional)
 try:
     from .mcp_manager import mcp_manager
@@ -54,6 +62,18 @@ class LilithControllerUltimate:
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/v1"
         self.client = OpenAI(base_url=self.api_url, api_key="not-needed")
+
+        # Run startup diagnostics
+        self.diagnostics_passed = True
+        if DIAGNOSTICS_AVAILABLE:
+            try:
+                log.info("🔍 Running startup diagnostics...")
+                self.diagnostics_passed = run_startup_diagnostic()
+                if not self.diagnostics_passed:
+                    log.warning("⚠️ Some vision/control capabilities may be limited")
+            except Exception as e:
+                log.warning(f"⚠️ Diagnostics failed: {e}")
+                self.diagnostics_passed = False
 
         # Optional LM-Studio connector
         try:
@@ -214,24 +234,9 @@ RULES:
                     if name == "type_text":
                         type_text(**args)
                         results.append("⌨️ Typed.")
-                    elif cmd["action"] == "click":
-                    xs, ys = cmd["params"].split()[:2]
-
-                     # ───────────  NOUVEAU  ───────────
-                    import pyautogui
-                    scr_w, scr_h = pyautogui.size()          # taille du bureau virtuel
-                    x = float(xs)
-                    y = float(ys)
-                    # si les valeurs sont des ratios 0-1, on les projette en pixels
-                    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
-                        x *= scr_w
-                        y *= scr_h
-                     x = int(round(x))
-                     y = int(round(y))
-                     # ─────────────────────────────────
-
-                     await mcp_mouse_click(x, y)
-                     return f"🖱️ **Clicked at:** ({x}, {y})"
+                    elif name == "click_screen":
+                        click_screen(**args)
+                        results.append("🖱️ Clicked.")
                     elif name == "move_mouse":
                         move_mouse(**args)
                         results.append("↔️ Moved.")
