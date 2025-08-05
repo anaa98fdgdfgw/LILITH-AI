@@ -336,7 +336,60 @@
         ::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #6a6a6a; }
         
-        /* Responsive design */
+        .autonomous-panel {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            border: 1px solid var(--accent-secondary);
+        }
+        .task-log {
+            background: #000;
+            height: 200px;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 6px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+        .log-entry { margin-bottom: 5px; line-height: 1.4; }
+        .log-entry.info { color: #ccc; }
+        .log-entry.status { color: #888; }
+        .log-entry.thought { color: #aaa; font-style: italic; }
+        .log-entry.action { color: var(--accent-info); }
+        .log-entry.result { color: var(--accent-success); }
+        .log-entry.error { color: var(--accent-error); font-weight: bold; }
+        .log-entry.success { color: var(--accent-primary); font-weight: bold; }
+
+        /* Nouvel aperçu de vision AI */
+        .ai-vision-preview {
+            position: relative;
+            margin-top: 15px;
+            border-radius: 8px;
+            overflow: hidden;
+            max-height: 200px;
+            border: 2px solid var(--accent-primary);
+        }
+        
+        .ai-vision-preview img {
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+        }
+        
+        .preview-label {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: var(--accent-primary);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
         @media (max-width: 1200px) {
             .container {
                 grid-template-columns: 1fr;
@@ -401,6 +454,10 @@
                     <i class="fas fa-eye"></i>
                     <span>Monitor</span>
                 </button>
+                <button class="control-button" id="toggleAutonomous">
+                    <i class="fas fa-brain"></i>
+                    <span>Autonomous</span>
+                </button>
             </div>
             <div class="streams-grid" id="streamsGrid">
                 <div style="text-align: center; color: var(--text-secondary); padding: 40px;">
@@ -408,6 +465,22 @@
                     <p>No active streams</p>
                     <p style="font-size: 14px;">Share your screen or enable AI screen to start streaming</p>
                 </div>
+            </div>
+            
+            <!-- Aperçu de la Vision AI -->
+            <div class="ai-vision-preview">
+                <div class="preview-label">AI VISION</div>
+                <img id="aiVisionPreview" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" alt="AI Vision">
+            </div>
+            
+            <div class="autonomous-panel">
+                <div class="panel-header"><i class="fas fa-brain"></i><span>Autonomous Mode</span></div>
+                <input type="text" class="chat-input" id="objectiveInput" placeholder="Enter main objective here...">
+                <div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <button class="control-button" id="startTaskButton"><i class="fas fa-play-circle"></i><span>Start Task</span></button>
+                    <button class="control-button" id="stopTaskButton" disabled><i class="fas fa-stop-circle"></i><span>Stop Task</span></button>
+                </div>
+                <div class="task-log" id="taskLog"><div class="log-entry info">Autonomous mode is idle.</div></div>
             </div>
         </div>
         
@@ -434,6 +507,7 @@
         let localVideoElement = null;
         let ttsEnabled = true;
         let monitoringEnabled = false;
+        let autonomousEnabled = false;
         let activeStreams = 0;
 
         const $ = (id) => document.getElementById(id);
@@ -446,6 +520,7 @@
         const toggleVtube = $('toggleVtube');
         const toggleTTS = $('toggleTTS');
         const toggleMonitoring = $('toggleMonitoring');
+        const toggleAutonomous = $('toggleAutonomous');
         const chatMessages = $('chatMessages');
         const chatInput = $('chatInput');
         const sendButton = $('sendButton');
@@ -453,6 +528,11 @@
         const vtubeImage = $('vtubeImage');
         const vtubePlaceholder = $('vtubePlaceholder');
         const monitoringIndicator = $('monitoringIndicator');
+        const objectiveInput = $('objectiveInput');
+        const startTaskButton = $('startTaskButton');
+        const stopTaskButton = $('stopTaskButton');
+        const taskLog = $('taskLog');
+        const aiVisionPreview = $('aiVisionPreview');
 
         const addMessage = (user, content, isAI = false, isObservation = false, isSystem = false) => {
             const div = document.createElement('div');
@@ -476,7 +556,6 @@
         };
 
         const updateStream = (id, title, frameData) => {
-            // Remove placeholder if it exists
             const placeholder = streamsGrid.querySelector('div[style*="text-align: center"]');
             if (placeholder) placeholder.remove();
             
@@ -495,7 +574,15 @@
                 streamsGrid.appendChild(container);
                 activeStreams++;
             }
-            container.querySelector('img').src = `data:image/jpeg;base64,${frameData}`;
+            
+            // Update stream image
+            const img = container.querySelector('img');
+            img.src = `data:image/jpeg;base64,${frameData}`;
+            
+            // If this is the AI screen, also update the AI vision preview
+            if (id === 'ai-screen') {
+                aiVisionPreview.src = `data:image/jpeg;base64,${frameData}`;
+            }
         };
         
         const removeStream = (id) => {
@@ -503,8 +590,6 @@
             if (stream) {
                 stream.remove();
                 activeStreams--;
-                
-                // Show placeholder if no streams
                 if (activeStreams === 0) {
                     streamsGrid.innerHTML = `
                         <div style="text-align: center; color: var(--text-secondary); padding: 40px;">
@@ -524,12 +609,10 @@
                 localVideoElement.srcObject = localStream;
                 localVideoElement.play();
                 sharingScreen = true;
-                shareScreenButton.textContent = 'Stop Sharing';
                 shareScreenButton.classList.add('active');
+                shareScreenButton.innerHTML = '<i class="fas fa-stop"></i><span>Stop Sharing</span>';
                 localStream.getVideoTracks()[0].onended = stopScreenShare;
 
-            
-                // Start sending frames to the server
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
                 const sendFrame = () => {
@@ -539,7 +622,7 @@
                     ctx.drawImage(localVideoElement, 0, 0);
                     const frame = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
                     socket.emit('client_screen_frame', { frame });
-                    setTimeout(sendFrame, 100); // 10 FPS
+                    setTimeout(sendFrame, 100);
                 };
                 localVideoElement.onloadedmetadata = sendFrame;
 
@@ -551,10 +634,9 @@
             localStream = null;
             localVideoElement = null;
             sharingScreen = false;
-            shareScreenButton.textContent = 'Share Screen';
             shareScreenButton.classList.remove('active');
-            const myStream = $(`user-${username}`);
-            if(myStream) myStream.remove();
+            shareScreenButton.innerHTML = '<i class="fas fa-desktop"></i><span>Share Screen</span>';
+            removeStream(`user-${username}`);
         };
 
         const sendMessage = () => {
@@ -570,138 +652,114 @@
                 clientFrame = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
             }
 
-            let aiFrame = null;
-            const aiImg = document.querySelector('#ai-screen img');
-            if (aiImg && aiImg.src.startsWith('data:image')) {
-                aiFrame = aiImg.src.split(',')[1];
-            }
-
-            socket.emit('chat_message', { message, client_frame: clientFrame, ai_frame: aiFrame, tts_enabled: ttsEnabled });
+            socket.emit('chat_message', { 
+                message, 
+                tts_enabled: ttsEnabled 
+            });
             chatInput.value = '';
         };
 
         // Socket event handlers
-        socket.on('connect', () => { 
-            statusIndicator.classList.add('connected'); 
-            statusText.textContent = 'Connected'; 
-        });
-        
-        socket.on('disconnect', () => { 
-            statusIndicator.classList.remove('connected'); 
-            statusText.textContent = 'Disconnected'; 
-        });
-        
+        socket.on('connect', () => { statusIndicator.classList.add('connected'); statusText.textContent = 'Connected'; });
+        socket.on('disconnect', () => { statusIndicator.classList.remove('connected'); statusText.textContent = 'Disconnected'; });
         socket.on('joined', (data) => {
             joined = true; 
             username = data.username;
             [shareScreenButton, chatInput, sendButton].forEach(el => el.disabled = false);
-            data.chat_history.forEach(msg => {
-                addMessage(
-                    msg.role === 'user' ? msg.username : 'LILITH AI', 
-                    msg.content, 
-                    msg.role === 'assistant'
-                );
-            });
+            data.chat_history.forEach(msg => { addMessage(msg.role === 'user' ? msg.username : 'LILITH AI', msg.content, msg.role === 'assistant'); });
         });
-        
         socket.on('user_joined', (data) => addMessage('System', `${data.username} joined the chat`, false, false, true));
-        
-        socket.on('user_left', (data) => { 
-            addMessage('System', `${data.username} left the chat`, false, false, true); 
-            removeStream(`user-${data.username}`);
-        });
-        
+        socket.on('user_left', (data) => { addMessage('System', `${data.username} left the chat`, false, false, true); removeStream(`user-${data.username}`); });
         socket.on('chat_message', (data) => addMessage(data.username, data.message, false));
-        
         socket.on('ai_response', (data) => addMessage('LILITH AI', data.message, true));
+        socket.on('ai_observation', (data) => { addMessage('LILITH AI', data.message, true, true); });
+        socket.on('autonomous_action', (data) => { addMessage('LILITH AI', data.message, true, false); });
         
-        socket.on('ai_observation', (data) => {
-            addMessage('LILITH AI', data.message, true, true);
+        socket.on('ai_screen_frame', (data) => {
+            updateStream('ai-screen', 'AI Screen', data.frame);
+            // Mettre également à jour l'aperçu de la vision AI
+            aiVisionPreview.src = `data:image/jpeg;base64,${data.frame}`;
         });
         
-        socket.on('ai_screen_frame', (data) => updateStream('ai-screen', 'AI Screen', data.frame));
-        
-        socket.on('vtube_frame', (data) => { 
-            vtubeImage.src = `data:image/jpeg;base64,${data.frame}`; 
-            vtubeImage.style.display = 'block';
-            vtubePlaceholder.style.display = 'none';
-        });
-        
+        socket.on('vtube_frame', (data) => { vtubeImage.src = `data:image/jpeg;base64,${data.frame}`; vtubeImage.style.display = 'block'; vtubePlaceholder.style.display = 'none'; });
         socket.on('user_screen_frame', (data) => updateStream(`user-${data.username}`, `${data.username}'s Screen`, data.frame));
-        
-        socket.on('ai_stream_suggestion', (data) => {
-            addMessage('System', `AI suggests to ${data.action} ${data.stream_type}: ${data.reason}`, false, false, true);
-        });
+        socket.on('ai_stream_suggestion', (data) => { addMessage('System', `AI suggests to ${data.action} ${data.stream_type}: ${data.reason}`, false, false, true); });
 
         // Button handlers
-        joinButton.onclick = () => {
-            const name = usernameInput.value.trim() || `User_${Math.floor(Math.random() * 1000)}`;
-            socket.emit('join', { username: name });
-            joinButton.disabled = true; 
-            usernameInput.disabled = true;
-        };
+        joinButton.onclick = () => { const name = usernameInput.value.trim() || `User_${Math.floor(Math.random() * 1000)}`; socket.emit('join', { username: name }); joinButton.disabled = true; usernameInput.disabled = true; };
+        shareScreenButton.onclick = () => { if (sharingScreen) stopScreenShare(); else startScreenShare(); };
+        toggleAiScreen.onclick = () => { const enabled = toggleAiScreen.classList.toggle('active'); socket.emit('toggle_ai_screen', { enabled }); if (!enabled) removeStream('ai-screen'); };
+        toggleVtube.onclick = () => { const enabled = toggleVtube.classList.toggle('active'); toggleVtube.innerHTML = enabled ? '<i class="fas fa-stop"></i><span>Stop VTube Stream</span>' : '<i class="fas fa-play"></i><span>Start VTube Stream</span>'; socket.emit('toggle_vtube_stream', { enabled }); if (!enabled) { vtubeImage.style.display = 'none'; vtubePlaceholder.style.display = 'flex'; } };
+        toggleTTS.onclick = () => { ttsEnabled = !ttsEnabled; toggleTTS.classList.toggle('active', ttsEnabled); toggleTTS.innerHTML = ttsEnabled ? '<i class="fas fa-volume-up"></i><span>TTS</span>' : '<i class="fas fa-volume-mute"></i><span>TTS</span>'; };
+        toggleMonitoring.onclick = () => { monitoringEnabled = !monitoringEnabled; toggleMonitoring.classList.toggle('active', monitoringEnabled); monitoringIndicator.classList.toggle('active', monitoringEnabled); socket.emit('toggle_dynamic_monitoring', { enabled: monitoringEnabled }); };
         
-        shareScreenButton.onclick = () => {
-            if (sharingScreen) {
-                stopScreenShare();
-            } else {
-                startScreenShare();
-            }
-            shareScreenButton.innerHTML = sharingScreen ? 
-                '<i class="fas fa-desktop"></i><span>Share Screen</span>' : 
-                '<i class="fas fa-stop"></i><span>Stop Sharing</span>';
-        };
-        
-        toggleAiScreen.onclick = () => {
-            const enabled = toggleAiScreen.classList.toggle('active');
-            socket.emit('toggle_ai_screen', { enabled });
-            if (!enabled) {
-                removeStream('ai-screen');
-            }
-        };
-        
-        toggleVtube.onclick = () => {
-            const enabled = toggleVtube.classList.toggle('active');
-            toggleVtube.innerHTML = enabled ? 
-                '<i class="fas fa-stop"></i><span>Stop VTube Stream</span>' : 
-                '<i class="fas fa-play"></i><span>Start VTube Stream</span>';
-            socket.emit('toggle_vtube_stream', { enabled });
-            
-            if (!enabled) {
-                vtubeImage.style.display = 'none';
-                vtubePlaceholder.style.display = 'flex';
-            }
-        };
-        
-        toggleTTS.onclick = () => { 
-            ttsEnabled = !ttsEnabled;
-            toggleTTS.classList.toggle('active', ttsEnabled);
-            toggleTTS.innerHTML = ttsEnabled ? 
-                '<i class="fas fa-volume-up"></i><span>TTS</span>' : 
-                '<i class="fas fa-volume-mute"></i><span>TTS</span>';
-        };
-        
-        toggleMonitoring.onclick = () => {
-            monitoringEnabled = !monitoringEnabled;
-            toggleMonitoring.classList.toggle('active', monitoringEnabled);
-            monitoringIndicator.classList.toggle('active', monitoringEnabled);
-            socket.emit('toggle_dynamic_monitoring', { enabled: monitoringEnabled });
+        // Bouton mode autonome
+        toggleAutonomous.onclick = () => { 
+            autonomousEnabled = !autonomousEnabled; 
+            toggleAutonomous.classList.toggle('active', autonomousEnabled); 
+            toggleAutonomous.innerHTML = autonomousEnabled ? 
+                '<i class="fas fa-brain"></i><span>Stop AI</span>' : 
+                '<i class="fas fa-brain"></i><span>Autonomous</span>';
+            socket.emit('toggle_autonomous_mode', { enabled: autonomousEnabled }); 
+            addTaskLog(autonomousEnabled ? "Autonomous mode activated" : "Autonomous mode deactivated", autonomousEnabled ? "success" : "info");
         };
         
         sendButton.onclick = sendMessage;
         chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
         usernameInput.onkeypress = (e) => { if (e.key === 'Enter') joinButton.click(); };
-        
-        // Set initial states
         toggleTTS.classList.add('active');
         
-        // Auto-enable monitoring after joining
-        socket.on('joined', () => {
-            setTimeout(() => {
-                if (!monitoringEnabled) {
-                    toggleMonitoring.click();
-                }
-            }, 3000);
+        socket.on('joined', () => { 
+            setTimeout(() => { 
+                if (!monitoringEnabled) toggleMonitoring.click(); 
+            }, 3000); 
+        });
+        
+        // Autonomous Mode Logic
+        const addTaskLog = (message, type = 'info') => {
+            const div = document.createElement('div');
+            div.className = `log-entry ${type}`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            taskLog.appendChild(div);
+            taskLog.scrollTop = taskLog.scrollHeight;
+        };
+
+        startTaskButton.onclick = () => {
+            const objective = objectiveInput.value.trim();
+            if (objective) {
+                socket.emit('start_autonomous_task', { objective });
+                taskLog.innerHTML = '';
+                addTaskLog(`Starting task: ${objective}`, 'info');
+            }
+        };
+
+        stopTaskButton.onclick = () => {
+            socket.emit('stop_autonomous_task');
+        };
+
+        socket.on('autonomous_status', (data) => {
+            if (data.running) {
+                startTaskButton.disabled = true;
+                stopTaskButton.disabled = false;
+                objectiveInput.disabled = true;
+                objectiveInput.value = data.objective;
+            } else {
+                startTaskButton.disabled = false;
+                stopTaskButton.disabled = true;
+                objectiveInput.disabled = false;
+            }
+        });
+
+        socket.on('autonomous_mode_status', (data) => {
+            autonomousEnabled = data.enabled;
+            toggleAutonomous.classList.toggle('active', autonomousEnabled);
+            toggleAutonomous.innerHTML = autonomousEnabled ? 
+                '<i class="fas fa-brain"></i><span>Stop AI</span>' : 
+                '<i class="fas fa-brain"></i><span>Autonomous</span>';
+        });
+
+        socket.on('task_log', (data) => {
+            addTaskLog(data.message, data.type);
         });
     </script>
 </body>

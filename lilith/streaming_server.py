@@ -87,9 +87,6 @@ def init_tts():
             # Set CABLE Output as the audio output
             if cable_output:
                 speaker.AudioOutput = cable_output
-                # Use the configured speaker for TTS
-                # Note: pyttsx3 doesn't directly support output device selection,
-                # so we'll use win32com.client directly for TTS
                 state.sapi_speaker = speaker
                 print("✅ TTS will output to CABLE Output (VB-Virtual Cable)")
             else:
@@ -194,10 +191,15 @@ class StreamingState:
         self.monitor_thread = None
         self.last_analysis_time = 0
         self.last_screen_hash = None
-        self.reaction_cooldown = 20  # seconds between reactions (reduced for more interactivity)
+        self.reaction_cooldown = 20  # seconds between reactions
         self.significant_changes = []
         self.context_memory = []  # Remember recent context
         self.last_activity_type = None
+        # AI vision system
+        self.current_view = "AI"  # Default AI view
+        self.current_ai_frame_b64 = None  # Current image in base64
+        # Autonomous mode
+        self.autonomous_mode = False
         
 state = StreamingState()
 
@@ -214,12 +216,6 @@ def tts_worker():
     
     consecutive_errors = 0
     max_consecutive_errors = 3
-    
-    # Dictionnaire des voix par langue
-    voice_by_lang = {
-        'fr': None,  # Sera défini dans init_tts
-        'en': None
-    }
     
     while True:
         try:
@@ -327,7 +323,7 @@ def tts_worker():
                                 print("TTS reinitialized successfully")
                             else:
                                 print("Failed to reinitialize TTS")
-                                time.sleep(5)  # Wait longer before retrying
+                                time.sleep(5)
                         except Exception as reinit_error:
                             print(f"Error during TTS reinitialization: {reinit_error}")
                             time.sleep(5)
@@ -388,46 +384,64 @@ if TTS_AVAILABLE:
     state.tts_thread.start()
 
 def capture_ai_screen():
-    """Capture AI's screen (server-side)."""
+    """Capture l'écran complet SANS AUCUN redimensionnement pour garantir une vision complète."""
     with mss.mss() as sct:
-        # Use monitor 2 if available, otherwise monitor 1
+        # Utiliser le moniteur 2 si disponible, sinon le moniteur 1
         monitor_idx = 2 if len(sct.monitors) > 2 else 1
         
         while state.ai_screen_enabled:
             try:
+                # Récupérer les infos du moniteur
                 monitor = sct.monitors[monitor_idx]
+                print(f"📊 Moniteur {monitor_idx}: {monitor}")
+                
+                # CAPTURE INTÉGRALE sans modification
                 screenshot = sct.grab(monitor)
                 frame = np.array(screenshot)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
                 
-                # Resize for performance
-                height, width = frame.shape[:2]
-                if width > 1280:
-                    scale = 1280 / width
-                    new_width = int(width * scale)
-                    new_height = int(height * scale)
-                    frame = cv2.resize(frame, (new_width, new_height))
+                # Conserver l'image originale sans aucune transformation
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
                 
-                # Don't add overlay text
+                # Log des dimensions précises (important pour le diagnostic)
+                h, w = frame_rgb.shape[:2]
+                print(f"📏 Image capturée: {w}x{h} pixels")
                 
-                # Convert to base64
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                # ABSOLUMENT AUCUN REDIMENSIONNEMENT
+                # Convertir directement en base64 avec qualité maximale
+                _, buffer = cv2.imencode('.jpg', frame_rgb, [cv2.IMWRITE_JPEG_QUALITY, 100])
                 jpg_as_text = base64.b64encode(buffer).decode('utf-8')
                 
-                with state.lock:
-                    state.current_ai_frame = jpg_as_text
+                file_size_kb = len(buffer) / 1024
+                print(f"📦 Taille de l'image: {file_size_kb:.2f} KB")
                 
-                # Emit to all clients
+                with state.lock:
+                    # Stocker à la fois l'image numpy originale et sa version base64
+                    state.current_ai_frame = frame_rgb
+                    state.current_ai_frame_b64 = jpg_as_text
+                
+                # Envoi de l'image intégrale aux clients
                 socketio.emit('ai_screen_frame', {'frame': jpg_as_text})
                 
                 time.sleep(0.1)  # 10 FPS
                 
             except Exception as e:
-                print(f"AI screen capture error: {e}")
+                print(f"❌ Erreur capture écran: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(1)
 
+def decode_b64_to_image(b64_string):
+    """Decode base64 image to numpy array."""
+    try:
+        img_bytes = base64.b64decode(b64_string)
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        return cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    except Exception as e:
+        print(f"Error decoding base64 image: {e}")
+        return None
+
 def capture_vtube_studio():
-    """Capture VTube Studio window even when not in foreground."""
+    """Capture VTube Studio window even when not in foreground - FIXED VERSION."""
     import ctypes
     from ctypes import wintypes
     
@@ -435,32 +449,43 @@ def capture_vtube_studio():
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
     
-    while state.vtube_stream_enabled:
-        try:
-            # Find VTube Studio window using Windows API
-            def enum_windows_callback(hwnd, windows):
+    # Correction: Utiliser une classe pour éviter l'erreur d'attribut 'append'
+    class WindowFinder:
+        def __init__(self):
+            self.found_hwnds = []
+            
+        def callback(self, hwnd, _):
+            try:
                 if user32.IsWindowVisible(hwnd):
                     length = user32.GetWindowTextLengthW(hwnd)
                     if length > 0:
                         buff = ctypes.create_unicode_buffer(length + 1)
                         user32.GetWindowTextW(hwnd, buff, length + 1)
                         if "VTube Studio" in buff.value:
-                            windows.append(hwnd)
-                return True
+                            self.found_hwnds.append(hwnd)
+                            print(f"✅ Found VTube Studio window: {buff.value}")
+            except Exception as e:
+                print(f"Error in window callback: {e}")
+            return True
+    
+    while state.vtube_stream_enabled:
+        try:
+            # Utiliser notre classe WindowFinder pour trouver VTube Studio
+            finder = WindowFinder()
+            EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+            user32.EnumWindows(EnumWindowsProc(finder.callback), 0)
             
-            # Find VTube Studio window
-            windows = []
-            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
-            user32.EnumWindows(WNDENUMPROC(enum_windows_callback), ctypes.py_object(windows))
-            
-            if windows:
-                hwnd = windows[0]
+            # Si la fenêtre VTube Studio a été trouvée
+            if finder.found_hwnds:
+                hwnd = finder.found_hwnds[0]
                 
                 # Get window dimensions
                 rect = wintypes.RECT()
                 user32.GetWindowRect(hwnd, ctypes.pointer(rect))
                 width = rect.right - rect.left
                 height = rect.bottom - rect.top
+                
+                print(f"📐 VTube Studio window: {width}x{height}")
                 
                 # Create device contexts
                 hwndDC = user32.GetWindowDC(hwnd)
@@ -489,8 +514,8 @@ def capture_vtube_studio():
                     # Flip vertically (Windows bitmaps are bottom-up)
                     frame = cv2.flip(frame, 0)
                     
-                    # Convert to base64
-                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    # Convert to base64 with maximum quality
+                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
                     jpg_as_text = base64.b64encode(buffer).decode('utf-8')
                     
                     with state.lock:
@@ -498,16 +523,24 @@ def capture_vtube_studio():
                     
                     # Emit to all clients
                     socketio.emit('vtube_frame', {'frame': jpg_as_text})
+                    
+                    print("📸 VTube Studio frame captured successfully")
+                else:
+                    print("⚠️ Failed to capture VTube Studio window")
                 
                 # Clean up
                 gdi32.DeleteObject(saveBitMap)
                 gdi32.DeleteDC(mfcDC)
                 user32.ReleaseDC(hwnd, hwndDC)
+            else:
+                print("🔍 VTube Studio window not found")
             
             time.sleep(0.033)  # 30 FPS for smooth animation
             
         except Exception as e:
-            print(f"VTube capture error: {e}")
+            print(f"❌ VTube capture error: {e}")
+            import traceback
+            traceback.print_exc()
             time.sleep(1)
 
 @app.route('/')
@@ -552,14 +585,32 @@ def handle_join(data):
 
 @socketio.on('client_screen_frame')
 def handle_client_screen(data):
-    """Handle screen frame from client."""
+    """Handle screen frame from client with optimized image quality."""
     if request.sid in state.active_users:
         username = state.active_users[request.sid]['username']
         frame_data = data.get('frame')
         
         # Store the frame in user state for AI to access
-        state.active_users[request.sid]['current_frame'] = frame_data
-        state.active_users[request.sid]['sharing_screen'] = True
+        state.active_users[request.sid]['current_frame_b64'] = frame_data
+        
+        # Decode the frame and store it as well
+        try:
+            img_bytes = base64.b64decode(frame_data)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            
+            # Log dimensions for debugging
+            if img is not None:
+                h, w = img.shape[:2]
+                print(f"📺 Received {username}'s screen frame: {w}x{h}")
+                
+                # Store the numpy array version for AI processing
+                state.active_users[request.sid]['current_frame'] = img
+                state.active_users[request.sid]['sharing_screen'] = True
+            else:
+                print(f"⚠️ Warning: Received invalid image frame from {username}")
+        except Exception as e:
+            print(f"❌ Error decoding client frame from {username}: {e}")
         
         # Broadcast to all clients including the sender
         emit('user_screen_frame', {
@@ -569,7 +620,7 @@ def handle_client_screen(data):
 
 @socketio.on('chat_message')
 def handle_chat_message(data):
-    """Handle chat message."""
+    """Handle chat message with intelligent stream selection."""
     try:
         if request.sid not in state.active_users:
             return
@@ -595,99 +646,50 @@ def handle_chat_message(data):
             'timestamp': datetime.now().isoformat()
         }, broadcast=True)
         
-        # --- Enhanced Vision System ---
-        # Get frames from multiple sources
-        client_frame_data = data.get('client_frame')  # Frame sent with message
-        ai_frame_data = data.get('ai_frame')  # AI's own screen if available
-        
-        # Also check for any active user streams
-        user_frames = []
-        for sid, user in state.active_users.items():
-            if user.get('sharing_screen') and user.get('current_frame'):
-                user_frames.append({
-                    'username': user['username'],
-                    'frame': user['current_frame']
-                })
-        
-        # Create composite image from all available sources
-        composite_image = None
-        try:
-            # Priority: Use client frame if available, otherwise use stored frames
-            if client_frame_data:
-                # Client sent a frame with the message
-                composite_image = create_composite_image(client_frame_data, ai_frame_data)
-            elif user_frames:
-                # Use the first available user stream
-                composite_image = create_composite_image(user_frames[0]['frame'], ai_frame_data)
-            elif ai_frame_data:
-                # Only AI screen available
-                composite_image = create_composite_image(None, ai_frame_data)
-            elif state.current_ai_frame:
-                # Use stored AI frame if nothing else
-                composite_image = create_composite_image(None, state.current_ai_frame)
-                
-        except Exception as e:
-            print(f"Error creating composite image: {e}")
-        
-        # Get active streams info for context
-        active_streams = []
+        # --- INTELLIGENT STREAM SELECTION ---
+        # Get all available streams
+        available_streams = []
         if state.ai_screen_enabled:
-            active_streams.append("AI Screen")
+            available_streams.append("AI")
         if state.vtube_stream_enabled:
-            active_streams.append("VTube Studio")
+            available_streams.append("VTube Studio")
         for sid, user in state.active_users.items():
             if user.get('sharing_screen'):
-                active_streams.append(f"{user['username']}'s screen")
+                available_streams.append(user['username'])
+        
+        # Auto-select best stream for AI to watch
+        best_stream = select_best_stream(available_streams, username)
+        composite_image = get_stream_image(best_stream)
+        
+        if composite_image is not None:
+            print(f"👁️ AI watching: {best_stream} - Image shape: {composite_image.shape}")
+        else:
+            print(f"❌ No image available from stream: {best_stream}")
         
         # Process with AI
         try:
-            # Check if controller is initialized, if not try to initialize it
+            # Check if controller is initialized
             global controller
             if controller is None:
-                print("⚠️ Controller not initialized, attempting to initialize...")
                 if not initialize_controller():
                     response = "❌ Unable to initialize AI controller. Please check LM Studio is running."
-                    emit('ai_response', {
-                        'message': response,
-                        'timestamp': datetime.now().isoformat()
-                    }, broadcast=True)
+                    emit('ai_response', {'message': response, 'timestamp': datetime.now().isoformat()}, broadcast=True)
                     return
-            
-            message_to_send = f"[{username}]: {message}"
-            if composite_image is not None:
-                message_to_send += " [ANALYSE VISUELLE REQUISE]"
-            
-            # Add stream context
-            if active_streams:
-                message_to_send += f"\n[ACTIVE STREAMS: {', '.join(active_streams)}]"
-            else:
-                message_to_send += "\n[NO ACTIVE STREAMS]"
 
+            # Call the controller with the selected image
             response = controller.chat(
-                message_to_send,
+                user_msg=message,
                 image_frame=composite_image,
                 personality='Playful',
-                stream_context={"active_streams": active_streams}
+                stream_context={
+                    "active_streams": available_streams,
+                    "current_view": best_stream,
+                    "observation_mode": state.dynamic_monitoring,
+                    "autonomous_mode": state.autonomous_mode
+                }
             )
-        except AttributeError as e:
-            # Controller might not be properly initialized
-            print(f"AttributeError in controller.chat: {e}")
-            print("Attempting to reinitialize controller...")
-            if initialize_controller():
-                try:
-                    response = controller.chat(
-                        message_to_send,
-                        image_frame=composite_image,
-                        personality='Playful',
-                        stream_context={"active_streams": active_streams}
-                    )
-                except Exception as retry_e:
-                    print(f"Error after reinitializing: {retry_e}")
-                    response = "❌ Unable to process message. Please ensure LM Studio is running with a model loaded."
-            else:
-                response = "❌ Unable to initialize AI controller. Please check LM Studio."
         except Exception as e:
-            print(f"Error calling controller.chat: {e}")
+            print(f"❌ Error calling controller.chat: {e}")
             import traceback
             traceback.print_exc()
             response = "❌ I encountered an error processing your message. Please ensure LM Studio is running and try again."
@@ -710,14 +712,60 @@ def handle_chat_message(data):
             state.tts_queue.append(response)
             
     except Exception as e:
-        print(f"Error in handle_chat_message: {e}")
+        print(f"❌ Error in handle_chat_message: {e}")
         import traceback
         traceback.print_exc()
-        # Send error message to user
         emit('ai_response', {
             'message': "Sorry, I encountered an error. Please try again.",
             'timestamp': datetime.now().isoformat()
         })
+
+def select_best_stream(available_streams, current_user):
+    """Intelligently select which stream the AI should watch."""
+    if not available_streams:
+        return "AI"
+    
+    # Priority 1: If a user just shared their screen, watch it
+    user_streams = [stream for stream in available_streams 
+                   if stream not in ["AI", "VTube Studio"]]
+    
+    if user_streams:
+        # Prioritize the current user if they're sharing
+        if current_user in user_streams:
+            return current_user
+        # Otherwise use the first user sharing
+        return user_streams[0]
+    
+    # Priority 2: AI's own screen if available
+    if "AI" in available_streams:
+        return "AI"
+    
+    # Priority 3: VTube Studio
+    if "VTube Studio" in available_streams:
+        return "VTube Studio"
+    
+    # Default: first available
+    return available_streams[0]
+
+def get_stream_image(stream_name):
+    """Get image from the specified stream."""
+    if stream_name == "AI" and state.current_ai_frame is not None:
+        return state.current_ai_frame
+    elif stream_name == "VTube Studio" and state.current_vtube_frame:
+        # Decode VTube frame
+        try:
+            img_bytes = base64.b64decode(state.current_vtube_frame)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            return cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except:
+            return None
+    else:
+        # Check user streams
+        for sid, user in state.active_users.items():
+            if user['username'] == stream_name and user.get('current_frame') is not None:
+                return user['current_frame']
+    
+    return None
 
 @socketio.on('toggle_ai_screen')
 def handle_toggle_ai_screen(data):
@@ -730,8 +778,10 @@ def handle_toggle_ai_screen(data):
         if enabled and not state.ai_screen_thread:
             state.ai_screen_thread = threading.Thread(target=capture_ai_screen, daemon=True)
             state.ai_screen_thread.start()
+            print("🖥️ AI screen capture started")
         elif not enabled:
             state.ai_screen_thread = None
+            print("🖥️ AI screen capture stopped")
 
 @socketio.on('toggle_vtube_stream')
 def handle_toggle_vtube(data):
@@ -744,8 +794,10 @@ def handle_toggle_vtube(data):
         if enabled and not state.vtube_thread:
             state.vtube_thread = threading.Thread(target=capture_vtube_studio, daemon=True)
             state.vtube_thread.start()
+            print("🎭 VTube Studio capture started")
         elif not enabled:
             state.vtube_thread = None
+            print("🎭 VTube Studio capture stopped")
 
 @socketio.on('get_active_streams')
 def handle_get_streams():
@@ -768,6 +820,15 @@ def handle_get_streams():
     
     emit('active_streams', {'streams': streams})
 
+@socketio.on('set_ai_view')
+def handle_set_ai_view(data):
+    """Set which view the AI should look at."""
+    view = data.get('view', 'AI')
+    with state.lock:
+        state.current_view = view
+        emit('ai_view_changed', {'current_view': view}, broadcast=True)
+        print(f"👁️ AI view changed to: {view}")
+
 @socketio.on('ai_stream_control')
 def handle_ai_stream_control(data):
     """Handle AI-initiated stream control commands."""
@@ -775,7 +836,7 @@ def handle_ai_stream_control(data):
     stream_type = data.get('stream_type')
     reason = data.get('reason', '')
     
-    print(f"AI Stream Control: {action} {stream_type} - {reason}")
+    print(f"🤖 AI Stream Control: {action} {stream_type} - {reason}")
     
     # Emit to all clients that AI wants to control streams
     emit('ai_stream_suggestion', {
@@ -792,6 +853,224 @@ def handle_ai_stream_control(data):
             handle_toggle_ai_screen({'enabled': action == 'enable'})
         elif stream_type == 'vtube' and action in ['enable', 'disable']:
             handle_toggle_vtube({'enabled': action == 'enable'})
+
+def analyze_screen_changes(current_frame, previous_hash):
+    """Analyze screen for significant changes with improved detection."""
+    if current_frame is None:
+        return None, []
+    
+    try:
+        # Handle both numpy arrays and base64 strings
+        if isinstance(current_frame, str):
+            # Decode base64 image
+            img_bytes = base64.b64decode(current_frame)
+            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+            img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+        else:
+            # Already a numpy array
+            img = current_frame
+        
+        if img is None:
+            return previous_hash, []
+        
+        # Convert to grayscale for analysis
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate hash for change detection
+        resized = cv2.resize(gray, (16, 16))
+        current_hash = hash(resized.tobytes())
+        
+        changes = []
+        
+        # Detect significant changes
+        if previous_hash and current_hash != previous_hash:
+            # Calculate change magnitude
+            change_magnitude = abs(current_hash - previous_hash)
+            
+            # Only process if change is significant
+            if change_magnitude > 1000000:  # Threshold for significant change
+                height, width = img.shape[:2]
+                
+                # Enhanced window detection
+                edges = cv2.Canny(gray, 50, 150)
+                contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                large_contours = [c for c in contours if cv2.contourArea(c) > (width * height * 0.05)]
+                
+                # Detect window changes
+                if len(large_contours) > 3:
+                    changes.append("new_window")
+                
+                # Color analysis for better detection
+                mean_color = cv2.mean(img)[:3]
+                
+                # Error detection (red tones)
+                if mean_color[2] > 180 and mean_color[2] > mean_color[1] * 1.5:
+                    changes.append("error_detected")
+                
+                # Success detection (green tones)
+                elif mean_color[1] > 180 and mean_color[1] > mean_color[2] * 1.5:
+                    changes.append("success_detected")
+                
+                # Blue tones (often links, buttons, selections)
+                elif mean_color[0] > 180 and mean_color[0] > mean_color[1] * 1.2:
+                    changes.append("selection_active")
+                
+                # Activity detection based on brightness
+                avg_brightness = np.mean(gray)
+                
+                if avg_brightness < 40:  # Very dark
+                    changes.append("terminal_active")
+                elif avg_brightness > 220:  # Very bright
+                    changes.append("browser_active")
+                elif 100 < avg_brightness < 150:  # Medium (often IDEs)
+                    changes.append("code_editor_active")
+                
+                # Detect loading or progress indicators
+                if change_magnitude > 5000000:
+                    changes.append("major_transition")
+                
+                # Remember activity type
+                if changes:
+                    state.last_activity_type = changes[0]
+        
+        return current_hash, changes
+        
+    except Exception as e:
+        print(f"❌ Error analyzing screen: {e}")
+        return previous_hash, []
+
+def dynamic_screen_monitor():
+    """Monitor screens dynamically and generate AI reactions."""
+    while state.dynamic_monitoring:
+        try:
+            current_time = time.time()
+            
+            # Check if enough time has passed since last reaction
+            if current_time - state.last_analysis_time < state.reaction_cooldown:
+                time.sleep(5)
+                continue
+            
+            # Get current frame to analyze
+            current_frame = None
+            context = ""
+            
+            # Priority order for monitoring
+            if state.current_ai_frame is not None:
+                current_frame = state.current_ai_frame
+                context = "AI Screen"
+            elif state.active_users:
+                # Find first user sharing screen
+                for sid, user in state.active_users.items():
+                    if user.get('sharing_screen') and user.get('current_frame') is not None:
+                        current_frame = user['current_frame']
+                        context = f"{user['username']}'s screen"
+                        break
+            
+            if current_frame is None:
+                time.sleep(5)
+                continue
+            
+            # Analyze the frame for changes
+            new_hash, changes = analyze_screen_changes(current_frame, state.last_screen_hash)
+            
+            # If significant changes detected, generate AI reaction
+            if changes and new_hash != state.last_screen_hash:
+                state.last_screen_hash = new_hash
+                state.last_analysis_time = current_time
+                
+                # Create context for AI
+                change_context = f"[DYNAMIC OBSERVATION: Detected {', '.join(changes)} on {context}]"
+                
+                # Generate AI reaction
+                try:
+                    # Get all active streams for context
+                    active_streams = []
+                    if state.ai_screen_enabled:
+                        active_streams.append("AI")
+                    if state.vtube_stream_enabled:
+                        active_streams.append("VTube Studio")
+                    for sid, user in state.active_users.items():
+                        if user.get('sharing_screen'):
+                            active_streams.append(user['username'])
+                    
+                    response = controller.chat(
+                        change_context,
+                        image_frame=current_frame,
+                        personality='Playful',
+                        stream_context={
+                            "observation_mode": True, 
+                            "changes": changes,
+                            "active_streams": active_streams,
+                            "observing": context
+                        }
+                    )
+                    
+                    # Send spontaneous AI observation
+                    socketio.emit('ai_observation', {
+                        'message': response,
+                        'context': changes,
+                        'source': context,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    # Add to TTS queue if enabled
+                    if TTS_AVAILABLE:
+                        state.tts_queue.append(response)
+                        
+                except Exception as e:
+                    print(f"❌ Error generating dynamic reaction: {e}")
+            
+            time.sleep(5)  # Check every 5 seconds
+            
+        except Exception as e:
+            print(f"❌ Error in dynamic monitoring: {e}")
+            time.sleep(5)
+
+@socketio.on('toggle_dynamic_monitoring')
+def handle_toggle_monitoring(data):
+    """Toggle dynamic screen monitoring."""
+    enabled = data.get('enabled', False)
+    
+    with state.lock:
+        state.dynamic_monitoring = enabled
+        
+        if enabled and not state.monitor_thread:
+            state.monitor_thread = threading.Thread(target=dynamic_screen_monitor, daemon=True)
+            state.monitor_thread.start()
+            print("🔍 Dynamic monitoring started")
+        elif not enabled:
+            state.monitor_thread = None
+            print("🔍 Dynamic monitoring stopped")
+
+@socketio.on('toggle_autonomous_mode')
+def handle_toggle_autonomous(data):
+    """Toggle autonomous mode."""
+    enabled = data.get('enabled', False)
+    
+    with state.lock:
+        state.autonomous_mode = enabled
+        
+        # Notify all clients of mode change
+        socketio.emit('autonomous_mode_status', {'enabled': enabled})
+        
+        # Log the action
+        socketio.emit('task_log', {
+            'message': f"Autonomous mode {'activated' if enabled else 'deactivated'}",
+            'type': 'status'
+        })
+        
+        if enabled:
+            # Add message to chat
+            socketio.emit('ai_response', {
+                'message': "🤖 **Autonomous mode activated**. I'll now help you more proactively and take initiative when needed.",
+                'timestamp': datetime.now().isoformat()
+            }, broadcast=True)
+        else:
+            # Add message to chat
+            socketio.emit('ai_response', {
+                'message': "🤖 **Autonomous mode deactivated**. I'll wait for your instructions.",
+                'timestamp': datetime.now().isoformat()
+            }, broadcast=True)
 
 def run_streaming_server(host='0.0.0.0', port=7861):
     """Run the streaming server."""
@@ -810,252 +1089,6 @@ def run_streaming_server(host='0.0.0.0', port=7861):
     monitor_starter.start()
     
     socketio.run(app, host=host, port=port, debug=False)
-
-def create_composite_image(client_b64, ai_b64):
-    """Create a composite image from two base64 strings."""
-    images = []
-    labels = []
-
-    # Decode client image
-    if client_b64:
-        try:
-            img_bytes = base64.b64decode(client_b64)
-            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-            img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
-            images.append(img)
-            labels.append("USER SCREEN")
-        except Exception as e:
-            print(f"Could not decode client image: {e}")
-
-    # Decode AI image
-    if ai_b64:
-        try:
-            img_bytes = base64.b64decode(ai_b64)
-            img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-            img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
-            images.append(img)
-            labels.append("AI SCREEN")
-        except Exception as e:
-            print(f"Could not decode AI image: {e}")
-
-    if not images:
-        return None
-
-    # Resize images to a standard width (e.g., 800px)
-    std_width = 800
-    resized_images = []
-    for img in images:
-        h, w, _ = img.shape
-        scale = std_width / w
-        new_h = int(h * scale)
-        resized_img = cv2.resize(img, (std_width, new_h), interpolation=cv2.INTER_AREA)
-        resized_images.append(resized_img)
-
-    # Add labels to images
-    labeled_images = []
-    for i, img in enumerate(resized_images):
-        cv2.putText(img, labels[i], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 6, cv2.LINE_AA)
-        cv2.putText(img, labels[i], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
-        labeled_images.append(img)
-
-    # Combine images vertically
-    composite = cv2.vconcat(labeled_images)
-    return composite
-
-def analyze_screen_changes(current_frame, previous_hash):
-    """Analyze screen for significant changes with improved detection."""
-    if current_frame is None:
-        return None, []
-    
-    # Decode base64 image
-    try:
-        img_bytes = base64.b64decode(current_frame)
-        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-        img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
-        
-        # Convert to grayscale for analysis
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Calculate hash for change detection
-        resized = cv2.resize(gray, (16, 16))
-        current_hash = hash(resized.tobytes())
-        
-        changes = []
-        
-        # Detect significant changes
-        if previous_hash and current_hash != previous_hash:
-            # Analyze what changed
-            if previous_hash:
-                # Calculate change magnitude
-                change_magnitude = abs(current_hash - previous_hash)
-                
-                # Only process if change is significant
-                if change_magnitude > 1000000:  # Threshold for significant change
-                    height, width = img.shape[:2]
-                    
-                    # Enhanced window detection
-                    edges = cv2.Canny(gray, 50, 150)
-                    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    large_contours = [c for c in contours if cv2.contourArea(c) > (width * height * 0.05)]
-                    
-                    # Detect window changes
-                    if len(large_contours) > 3:
-                        changes.append("new_window")
-                    
-                    # Color analysis for better detection
-                    mean_color = cv2.mean(img)[:3]
-                    
-                    # Error detection (red tones)
-                    if mean_color[2] > 180 and mean_color[2] > mean_color[1] * 1.5:
-                        changes.append("error_detected")
-                    
-                    # Success detection (green tones)
-                    elif mean_color[1] > 180 and mean_color[1] > mean_color[2] * 1.5:
-                        changes.append("success_detected")
-                    
-                    # Blue tones (often links, buttons, selections)
-                    elif mean_color[0] > 180 and mean_color[0] > mean_color[1] * 1.2:
-                        changes.append("selection_active")
-                    
-                    # Activity detection based on brightness
-                    avg_brightness = np.mean(gray)
-                    
-                    if avg_brightness < 40:  # Very dark
-                        changes.append("terminal_active")
-                    elif avg_brightness > 220:  # Very bright
-                        changes.append("browser_active")
-                    elif 100 < avg_brightness < 150:  # Medium (often IDEs)
-                        changes.append("code_editor_active")
-                    
-                    # Detect loading or progress indicators
-                    if change_magnitude > 5000000:
-                        changes.append("major_transition")
-                    
-                    # Remember activity type
-                    if changes:
-                        state.last_activity_type = changes[0]
-        
-        return current_hash, changes
-        
-    except Exception as e:
-        print(f"Error analyzing screen: {e}")
-        return previous_hash, []
-
-def dynamic_screen_monitor():
-    """Monitor screens dynamically and generate AI reactions."""
-    while state.dynamic_monitoring:
-        try:
-            current_time = time.time()
-            
-            # Check if enough time has passed since last reaction
-            if current_time - state.last_analysis_time < state.reaction_cooldown:
-                time.sleep(5)
-                continue
-            
-            # Get current frames from all sources
-            frames_to_analyze = []
-            contexts = []
-            
-            # Priority 1: AI's own screen
-            if state.ai_screen_enabled and state.current_ai_frame:
-                frames_to_analyze.append(state.current_ai_frame)
-                contexts.append("AI Screen")
-            
-            # Priority 2: Active user screens
-            for sid, user in state.active_users.items():
-                if user.get('sharing_screen') and user.get('current_frame'):
-                    frames_to_analyze.append(user['current_frame'])
-                    contexts.append(f"{user['username']}'s screen")
-                    break  # Use first available user screen
-            
-            # Priority 3: VTube Studio if active
-            if not frames_to_analyze and state.vtube_stream_enabled and state.current_vtube_frame:
-                frames_to_analyze.append(state.current_vtube_frame)
-                contexts.append("VTube Studio")
-            
-            if not frames_to_analyze:
-                time.sleep(5)
-                continue
-            
-            # Analyze the main frame
-            new_hash, changes = analyze_screen_changes(
-                frames_to_analyze[0], 
-                state.last_screen_hash
-            )
-            
-            # If significant changes detected, generate AI reaction
-            if changes and new_hash != state.last_screen_hash:
-                state.last_screen_hash = new_hash
-                state.last_analysis_time = current_time
-                
-                # Create context for AI
-                change_context = f"[DYNAMIC OBSERVATION: Detected {', '.join(changes)} on {contexts[0]}]"
-                
-                # Generate AI reaction
-                try:
-                    # Decode the frame for AI analysis
-                    img_bytes = base64.b64decode(frames_to_analyze[0])
-                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-                    img = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
-                    
-                    # Get all active streams for context
-                    active_streams = []
-                    if state.ai_screen_enabled:
-                        active_streams.append("AI Screen")
-                    if state.vtube_stream_enabled:
-                        active_streams.append("VTube Studio")
-                    for sid, user in state.active_users.items():
-                        if user.get('sharing_screen'):
-                            active_streams.append(f"{user['username']}'s screen")
-                    
-                    response = controller.chat(
-                        change_context,
-                        image_frame=img,
-                        personality='Playful',
-                        stream_context={
-                            "observation_mode": True, 
-                            "changes": changes,
-                            "active_streams": active_streams,
-                            "observing": contexts[0]
-                        }
-                    )
-                    
-                    # Send spontaneous AI observation
-                    socketio.emit('ai_observation', {
-                        'message': response,
-                        'context': changes,
-                        'source': contexts[0],
-                        'timestamp': datetime.now().isoformat()
-                    })
-                    
-                    # Add to TTS queue if enabled
-                    if TTS_AVAILABLE:
-                        state.tts_queue.append(response)
-                        
-                except Exception as e:
-                    print(f"Error generating dynamic reaction: {e}")
-            
-            time.sleep(5)  # Check every 5 seconds
-            
-        except Exception as e:
-            print(f"Error in dynamic monitoring: {e}")
-            time.sleep(5)
-
-@socketio.on('toggle_dynamic_monitoring')
-def handle_toggle_monitoring(data):
-    """Toggle dynamic screen monitoring."""
-    enabled = data.get('enabled', False)
-    
-    with state.lock:
-        state.dynamic_monitoring = enabled
-        
-        if enabled and not state.monitor_thread:
-            state.monitor_thread = threading.Thread(target=dynamic_screen_monitor, daemon=True)
-            state.monitor_thread.start()
-            print("🔍 Dynamic monitoring started")
-        elif not enabled:
-            state.monitor_thread = None
-            print("🔍 Dynamic monitoring stopped")
 
 if __name__ == '__main__':
     run_streaming_server()

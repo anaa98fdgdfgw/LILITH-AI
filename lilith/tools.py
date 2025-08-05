@@ -1,4 +1,8 @@
-"""Tools for Lilith to interact with the system."""
+"""
+Tools for Lilith to interact with the system.
+Version: 1.1 (AB498 RPC Fix)
+Date: 2025-08-05
+"""
 from __future__ import annotations
 
 import subprocess
@@ -11,19 +15,65 @@ import tempfile
 import textwrap
 import ast
 import traceback
+import json as _json, urllib.request as _u, urllib.error as _ue
 
+# ----------------------------------------------------------------------
+#  AB498 RPC Functions (for screen control)
+# ----------------------------------------------------------------------
+
+_AB498_URL = "http://127.0.0.1:3011/rpc"
+
+def _ab498_rpc(method: str, params: dict | None = None):
+    """Helper function to call the AB498 control server."""
+    payload = _json.dumps(
+        {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1}
+    ).encode()
+    req = _u.Request(_AB498_URL, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with _u.urlopen(req, timeout=5) as resp:
+            data = _json.load(resp)
+            if data.get("error"):
+                raise RuntimeError(data["error"])
+            return data.get("result", {})
+    except _ue.URLError as exc:
+        raise RuntimeError(f"AB498 control server unreachable at {_AB498_URL}: {exc}") from exc
+
+def type_text(text: str, interval: float = 0.0) -> bool:
+    """Types the given text via the local keyboard."""
+    _ab498_rpc("keyboard_type", {"text": text, "interval": interval})
+    return True
+
+def click_screen(x_rel: float, y_rel: float, button: str = "left") -> bool:
+    """Clicks the screen at relative (0.0-1.0) coordinates."""
+    params = {"x_rel": x_rel, "y_rel": y_rel, "button": button}
+    _ab498_rpc("mouse_click", params)
+    return True
+
+def move_mouse(x_rel: float, y_rel: float, duration: float = 0.2) -> bool:
+    """Moves the mouse to relative (0.0-1.0) coordinates."""
+    params = {"x_rel": x_rel, "y_rel": y_rel, "duration": duration}
+    _ab498_rpc("mouse_move", params)
+    return True
+
+def take_screenshot() -> str:
+    """Captures the screen and returns a base64 encoded PNG image."""
+    return _ab498_rpc("take_screenshot").get("image", "")
+
+# ----------------------------------------------------------------------
+#  LilithTools Class (for filesystem and execution)
+# ----------------------------------------------------------------------
 
 class LilithTools:
-    """Collection of tools that Lilith can use to interact with the system."""
+    """Collection of tools that Lilith can use to interact with the local system."""
     
     def __init__(self, workspace_dir: Optional[Path] = None):
         """Initialize tools with an optional workspace directory."""
         self.workspace = workspace_dir or Path.cwd() / "lilith_workspace"
         self.workspace.mkdir(exist_ok=True)
         
-    def execute_python(self, code: str, timeout: int = 10) -> Dict[str, str]:
+    def execute_python(self, code: str, timeout: int = 10) -> Dict[str, Any]:
         """Execute Python code in a sandboxed environment."""
-        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fp:
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, dir=self.workspace, encoding='utf-8') as fp:
             fp.write(textwrap.dedent(code))
             tmp_path = Path(fp.name)
         
@@ -33,7 +83,8 @@ class LilithTools:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(self.workspace)
+                cwd=str(self.workspace),
+                encoding='utf-8'
             )
             return {
                 "success": proc.returncode == 0,
@@ -45,7 +96,7 @@ class LilithTools:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": f"Code execution timed out after {timeout} seconds",
+                "stderr": f"Code execution timed out after {timeout} seconds.",
                 "returncode": -1
             }
         except Exception as e:
@@ -59,18 +110,18 @@ class LilithTools:
             tmp_path.unlink(missing_ok=True)
     
     def execute_command(self, command: str, timeout: int = 30) -> Dict[str, Any]:
-        """Execute a shell command."""
+        """Execute a shell command in the workspace."""
         try:
-            # Use shell=True on Windows, shell=False on Unix
             shell = sys.platform.startswith('win')
             
             proc = subprocess.run(
-                command if not shell else command,
+                command,
                 shell=shell,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=str(self.workspace)
+                cwd=str(self.workspace),
+                encoding='utf-8'
             )
             
             return {
@@ -83,7 +134,7 @@ class LilithTools:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": f"Command timed out after {timeout} seconds",
+                "stderr": f"Command timed out after {timeout} seconds.",
                 "returncode": -1
             }
         except Exception as e:
@@ -95,271 +146,50 @@ class LilithTools:
             }
     
     def read_file(self, filepath: str) -> Dict[str, Any]:
-        """Read a file from the workspace or absolute path."""
+        """Read a file from the workspace."""
         try:
-            path = Path(filepath)
-            if not path.is_absolute():
-                path = self.workspace / path
-                
-            if not path.exists():
-                return {
-                    "success": False,
-                    "content": "",
-                    "error": f"File not found: {filepath}"
-                }
+            path = self._resolve_path(filepath)
+            if not path.is_file():
+                return {"success": False, "error": f"File not found or is a directory: {filepath}"}
                 
             content = path.read_text(encoding='utf-8')
-            return {
-                "success": True,
-                "content": content,
-                "error": None
-            }
+            return {"success": True, "content": content}
         except Exception as e:
-            return {
-                "success": False,
-                "content": "",
-                "error": f"Error reading file: {str(e)}"
-            }
+            return {"success": False, "content": "", "error": f"Error reading file: {str(e)}"}
     
     def write_file(self, filepath: str, content: str) -> Dict[str, Any]:
         """Write content to a file in the workspace."""
         try:
-            path = Path(filepath)
-            if not path.is_absolute():
-                path = self.workspace / path
-                
-            # Create parent directories if they don't exist
+            path = self._resolve_path(filepath)
             path.parent.mkdir(parents=True, exist_ok=True)
-            
             path.write_text(content, encoding='utf-8')
-            return {
-                "success": True,
-                "path": str(path),
-                "error": None
-            }
+            return {"success": True, "path": str(path)}
         except Exception as e:
-            return {
-                "success": False,
-                "path": "",
-                "error": f"Error writing file: {str(e)}"
-            }
+            return {"success": False, "path": "", "error": f"Error writing file: {str(e)}"}
     
-    def list_files(self, directory: str = ".") -> Dict[str, Any]:
-        """List files in a directory."""
+    def list_directory(self, path: str = ".") -> Dict[str, Any]:
+        """List files and subdirectories in a given path within the workspace."""
         try:
-            path = Path(directory)
-            if not path.is_absolute():
-                path = self.workspace / path
+            dir_path = self._resolve_path(path)
+            if not dir_path.is_dir():
+                return {"success": False, "error": f"Path is not a directory: {path}"}
                 
-            if not path.exists():
-                return {
-                    "success": False,
-                    "files": [],
-                    "error": f"Directory not found: {directory}"
-                }
-                
-            files = []
-            for item in path.iterdir():
-                files.append({
+            items = []
+            for item in sorted(dir_path.iterdir()):
+                items.append({
                     "name": item.name,
                     "type": "directory" if item.is_dir() else "file",
-                    "size": item.stat().st_size if item.is_file() else None
                 })
                 
-            return {
-                "success": True,
-                "files": files,
-                "error": None
-            }
+            return {"success": True, "items": items}
         except Exception as e:
-            return {
-                "success": False,
-                "files": [],
-                "error": f"Error listing files: {str(e)}"
-            }
-    
-    def analyze_code(self, code: str, language: str = "python") -> Dict[str, Any]:
-        """Analyze code structure and provide insights."""
-        if language.lower() != "python":
-            return {
-                "success": False,
-                "analysis": {},
-                "error": "Currently only Python analysis is supported"
-            }
-            
-        try:
-            tree = ast.parse(code)
-            
-            analysis = {
-                "functions": [],
-                "classes": [],
-                "imports": [],
-                "variables": [],
-                "line_count": len(code.splitlines()),
-                "has_main": False
-            }
-            
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    analysis["functions"].append({
-                        "name": node.name,
-                        "args": [arg.arg for arg in node.args.args],
-                        "lineno": node.lineno
-                    })
-                    if node.name == "main":
-                        analysis["has_main"] = True
-                elif isinstance(node, ast.ClassDef):
-                    analysis["classes"].append({
-                        "name": node.name,
-                        "lineno": node.lineno,
-                        "methods": [n.name for n in node.body if isinstance(n, ast.FunctionDef)]
-                    })
-                elif isinstance(node, ast.Import):
-                    for alias in node.names:
-                        analysis["imports"].append(alias.name)
-                elif isinstance(node, ast.ImportFrom):
-                    analysis["imports"].append(f"{node.module}.{node.names[0].name}")
-                elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
-                    analysis["variables"].append(node.targets[0].id)
-                    
-            return {
-                "success": True,
-                "analysis": analysis,
-                "error": None
-            }
-        except SyntaxError as e:
-            return {
-                "success": False,
-                "analysis": {},
-                "error": f"Syntax error in code: {e.msg} at line {e.lineno}"
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "analysis": {},
-                "error": f"Error analyzing code: {str(e)}"
-            }
-    
-    def create_project(self, name: str, project_type: str = "python") -> Dict[str, Any]:
-        """Create a new project structure."""
-        try:
-            project_path = self.workspace / name
-            if project_path.exists():
-                return {
-                    "success": False,
-                    "path": "",
-                    "error": f"Project '{name}' already exists"
-                }
-                
-            project_path.mkdir(parents=True)
-            
-            if project_type == "python":
-                # Create Python project structure
-                (project_path / "src").mkdir()
-                (project_path / "tests").mkdir()
-                (project_path / "docs").mkdir()
-                
-                # Create initial files
-                (project_path / "README.md").write_text(f"# {name}\n\nA Python project created by Lilith.")
-                (project_path / "requirements.txt").write_text("")
-                (project_path / ".gitignore").write_text("__pycache__/\n*.pyc\n.env\nvenv/\n")
-                (project_path / "src" / "__init__.py").write_text("")
-                (project_path / "src" / "main.py").write_text(
-                    'def main():\n    print("Hello from Lilith!")\n\nif __name__ == "__main__":\n    main()\n'
-                )
-                
-            elif project_type == "web":
-                # Create web project structure
-                (project_path / "css").mkdir()
-                (project_path / "js").mkdir()
-                (project_path / "images").mkdir()
-                
-                # Create initial files
-                (project_path / "index.html").write_text(
-                    '<!DOCTYPE html>\n<html>\n<head>\n    <title>' + name + 
-                    '</title>\n    <link rel="stylesheet" href="css/style.css">\n</head>\n<body>\n    ' +
-                    '<h1>Welcome to ' + name + '</h1>\n    <p>Created by Lilith</p>\n    ' +
-                    '<script src="js/script.js"></script>\n</body>\n</html>'
-                )
-                (project_path / "css" / "style.css").write_text(
-                    'body {\n    font-family: Arial, sans-serif;\n    margin: 0;\n    padding: 20px;\n}'
-                )
-                (project_path / "js" / "script.js").write_text(
-                    'console.log("Hello from Lilith!");'
-                )
-                
-            return {
-                "success": True,
-                "path": str(project_path),
-                "error": None
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "path": "",
-                "error": f"Error creating project: {str(e)}"
-            }
-    
-    def get_workspace_info(self) -> Dict[str, Any]:
-        """Get information about the current workspace."""
-        try:
-            projects = []
-            total_size = 0
-            
-            for item in self.workspace.iterdir():
-                if item.is_dir():
-                    size = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
-                    projects.append({
-                        "name": item.name,
-                        "size": size,
-                        "files": len(list(item.rglob('*')))
-                    })
-                    total_size += size
-                    
-            return {
-                "workspace_path": str(self.workspace),
-                "projects": projects,
-                "total_size": total_size,
-                "project_count": len(projects)
-            }
-        except Exception as e:
-            return {
-                "workspace_path": str(self.workspace),
-                "projects": [],
-                "total_size": 0,
-                "project_count": 0,
-                "error": str(e)
-            }
-import json as _json, urllib.request as _u, urllib.error as _ue
+            return {"success": False, "items": [], "error": f"Error listing directory: {str(e)}"}
 
-_AB498_URL = "http://127.0.0.1:3011/rpc"
-
-def _ab498_rpc(method: str, params: dict | None = None):
-    payload = _json.dumps(
-        {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1}
-    ).encode()
-    req = _u.Request(_AB498_URL, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        with _u.urlopen(req, timeout=5) as resp:
-            data = _json.load(resp)
-            if data.get("error"):
-                raise RuntimeError(data["error"])
-            return data.get("result", {})
-    except _ue.URLError as exc:
-        raise RuntimeError(f"AB498 control server unreachable: {exc}") from exc
-
-def type_text(text: str, interval: float = 0.0) -> bool:
-    _ab498_rpc("type_text", {"text": text, "interval": interval}); return True
-
-def click_screen(*, x: int | None = None, y: int | None = None,
-                 x_rel: float | None = None, y_rel: float | None = None,
-                 button: str = "left") -> bool:
-    _ab498_rpc("click_screen", {"x": x, "y": y, "x_rel": x_rel, "y_rel": y_rel, "button": button}); return True
-
-def move_mouse(*, x: int | None = None, y: int | None = None,
-               x_rel: float | None = None, y_rel: float | None = None,
-               duration: float = 0.2) -> bool:
-    _ab498_rpc("move_mouse", {"x": x, "y": y, "x_rel": x_rel, "y_rel": y_rel, "duration": duration}); return True
-
-def take_screenshot() -> str:
-    return _ab498_rpc("take_screenshot").get("image", "")
+    def _resolve_path(self, filepath: str) -> Path:
+        """Resolve a path against the workspace, ensuring it's safe."""
+        # This is a security measure to prevent directory traversal attacks.
+        # It ensures that the resolved path is still within the workspace directory.
+        resolved_path = (self.workspace / filepath).resolve()
+        if self.workspace.resolve() not in resolved_path.parents and resolved_path != self.workspace.resolve():
+             raise PermissionError(f"Access to path '{filepath}' is outside the allowed workspace.")
+        return resolved_path
