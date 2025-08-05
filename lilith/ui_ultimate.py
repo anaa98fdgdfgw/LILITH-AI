@@ -439,8 +439,18 @@ with gr.Blocks(title="Lilith Ultimate - RTX 3060 Optimized", css=ULTIMATE_CSS, t
             with gr.Row():
                 other_users = gr.Markdown("**Active users:** Loading...")
             
-            with gr.Accordion("🛠️ Advanced Tools & MCP", open=False):
-                gr.Markdown("### Available Commands:\n- **EXECUTE_PYTHON:** Run Python code\n- **RUN_COMMAND:** Execute system commands\n- **WRITE_FILE:** Create/edit files\n- **CREATE_PROJECT:** Scaffold projects\n\n### MCP Commands (if available):\n- **MCP_SEARCH:** Web search\n- **MCP_GITHUB_ISSUE:** Create GitHub issues\n- **MCP_TRADE:** Stock/crypto trading\n- **MCP_MEMORY:** Persistent storage\n- **MCP_CONTROL:** Local automation")
+            with gr.Accordion("🛠️ Advanced Tools & Enhanced Computer Control", open=False):
+                gr.Markdown("### Enhanced Computer Control:\n- **capture_full_screen:** Full screen capture with OCR\n- **analyze_screen:** Complete screen analysis with text extraction\n- **click_at_text:** Find and click on specific text\n- **get_all_windows:** List all open windows\n- **activate_window:** Switch to specific window\n- **automate_task:** Execute automation sequences\n\n### Classic Commands:\n- **EXECUTE_PYTHON:** Run Python code\n- **RUN_COMMAND:** Execute system commands\n- **WRITE_FILE:** Create/edit files\n- **CREATE_PROJECT:** Scaffold projects\n\n### MCP Commands (if available):\n- **MCP_SEARCH:** Web search\n- **MCP_GITHUB_ISSUE:** Create GitHub issues\n- **MCP_TRADE:** Stock/crypto trading\n- **MCP_MEMORY:** Persistent storage\n- **MCP_CONTROL:** Local automation")
+                
+                # Computer control status
+                with gr.Group():
+                    gr.Markdown("### 🖥️ Computer Control Status")
+                    computer_control_status = gr.Textbox(
+                        label="Enhanced Control Status",
+                        value="Checking computer control capabilities...",
+                        interactive=False
+                    )
+                    refresh_control_status = gr.Button("Refresh Status", size="sm")
                 
                 if MCP_AVAILABLE:
                     mcp_status = gr.JSON(label="MCP Server Status", value={})
@@ -778,6 +788,42 @@ with gr.Blocks(title="Lilith Ultimate - RTX 3060 Optimized", css=ULTIMATE_CSS, t
             return mcp_manager.get_all_status()
         refresh_mcp.click(get_mcp_status, outputs=[mcp_status])
     
+    def get_computer_control_status():
+        """Get computer control status and capabilities."""
+        try:
+            # Try to import and get status from computer control
+            from .computer_control import get_computer_controller
+            controller = get_computer_controller()
+            system_info = controller.get_system_info()
+            
+            capabilities = system_info.get('capabilities', {})
+            permissions = system_info.get('permissions', {})
+            monitors = len(system_info.get('monitors', []))
+            
+            status_text = "✅ Enhanced Computer Control Active\n\n"
+            status_text += f"🖥️ Monitors: {monitors}\n"
+            status_text += f"📸 Screen Size: {system_info.get('screen_size', {}).get('width')}x{system_info.get('screen_size', {}).get('height')}\n"
+            status_text += f"🖱️ Mouse Position: ({system_info.get('mouse_position', {}).get('x')}, {system_info.get('mouse_position', {}).get('y')})\n"
+            status_text += f"💾 CPU: {system_info.get('cpu_percent', 0):.1f}%\n"
+            status_text += f"🧠 Memory: {system_info.get('memory_percent', 0):.1f}%\n\n"
+            
+            status_text += "🔧 Capabilities:\n"
+            status_text += f"  • OCR (Tesseract): {'✅' if capabilities.get('tesseract_ocr') else '❌'}\n"
+            status_text += f"  • OCR (EasyOCR): {'✅' if capabilities.get('easyocr') else '❌'}\n"
+            status_text += f"  • Advanced Input: {'✅' if capabilities.get('advanced_input') else '❌'}\n"
+            status_text += f"  • Windows API: {'✅' if capabilities.get('windows_api') else '❌'}\n\n"
+            
+            status_text += "🔐 Permissions:\n"
+            for perm, enabled in permissions.items():
+                status_text += f"  • {perm.replace('_', ' ').title()}: {'✅' if enabled else '❌'}\n"
+            
+            return status_text
+            
+        except Exception as e:
+            return f"⚠️ Enhanced Computer Control Not Available\n\nError: {str(e)}\n\nFalling back to basic control mode."
+    
+    refresh_control_status.click(get_computer_control_status, outputs=[computer_control_status])
+    
     def get_workspace_info():
         try:
             workspace = Path.cwd() / "lilith_workspace"
@@ -797,6 +843,7 @@ with gr.Blocks(title="Lilith Ultimate - RTX 3060 Optimized", css=ULTIMATE_CSS, t
         demo.load(get_mcp_status, outputs=[mcp_status])
     demo.load(get_workspace_info, outputs=[workspace_info])
     demo.load(update_active_users, outputs=[other_users])
+    demo.load(get_computer_control_status, outputs=[computer_control_status])
 
 # Export demo
 __all__ = ['demo']

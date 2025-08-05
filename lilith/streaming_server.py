@@ -19,6 +19,17 @@ import langdetect  # Pour détection de langue
 # Import Lilith controller
 from .controller_ultimate import LilithControllerUltimate
 
+# Import enhanced computer control
+try:
+    from .computer_control import (
+        get_computer_controller, 
+        capture_screen as capture_full_screen,
+        analyze_full_screen
+    )
+    ENHANCED_CONTROL_AVAILABLE = True
+except ImportError:
+    ENHANCED_CONTROL_AVAILABLE = False
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'lilith-ai-secret-key'
 CORS(app)
@@ -26,6 +37,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Initialize components
 controller = None
+computer_controller = None  # Enhanced computer controller for streaming
 
 def initialize_controller():
     """Initialize controller with proper error handling."""
@@ -388,17 +400,33 @@ if TTS_AVAILABLE:
     state.tts_thread.start()
 
 def capture_ai_screen():
-    """Capture AI's screen (server-side)."""
+    """Capture AI's screen (server-side) with enhanced capabilities."""
+    global computer_controller
+    
+    # Initialize enhanced controller if available
+    if ENHANCED_CONTROL_AVAILABLE and computer_controller is None:
+        try:
+            computer_controller = get_computer_controller()
+            print("✅ Enhanced computer control initialized for streaming")
+        except Exception as e:
+            print(f"⚠️ Enhanced control failed, using basic mode: {e}")
+    
     with mss.mss() as sct:
         # Use monitor 2 if available, otherwise monitor 1
         monitor_idx = 2 if len(sct.monitors) > 2 else 1
         
         while state.ai_screen_enabled:
             try:
-                monitor = sct.monitors[monitor_idx]
-                screenshot = sct.grab(monitor)
-                frame = np.array(screenshot)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+                if ENHANCED_CONTROL_AVAILABLE and computer_controller:
+                    # Use enhanced screen capture
+                    screenshot = computer_controller.vision.capture_screen(monitor_idx)
+                    frame = screenshot  # Already in RGB format
+                else:
+                    # Use basic MSS capture
+                    monitor = sct.monitors[monitor_idx]
+                    screenshot = sct.grab(monitor)
+                    frame = np.array(screenshot)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
                 
                 # Resize for performance
                 height, width = frame.shape[:2]
@@ -408,7 +436,13 @@ def capture_ai_screen():
                     new_height = int(height * scale)
                     frame = cv2.resize(frame, (new_width, new_height))
                 
-                # Don't add overlay text
+                # Add enhanced info overlay
+                if ENHANCED_CONTROL_AVAILABLE:
+                    cv2.putText(frame, f"AI Screen - Enhanced Mode - Monitor {monitor_idx}", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, f"AI Screen - Basic Mode - Monitor {monitor_idx}", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
                 
                 # Convert to base64
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -609,11 +643,29 @@ def handle_chat_message(data):
                     'frame': user['current_frame']
                 })
         
+        # Enhanced analysis if computer control is available
+        enhanced_analysis = None
+        if ENHANCED_CONTROL_AVAILABLE and computer_controller:
+            try:
+                # Get comprehensive screen analysis
+                analysis = computer_controller.analyze_screen(monitor=0, include_ocr=True, include_ui_elements=True)
+                if analysis:
+                    enhanced_analysis = analysis
+                    print(f"📊 Enhanced analysis: {len(analysis.get('text_elements', []))} text elements found")
+            except Exception as e:
+                print(f"Enhanced analysis error: {e}")
+        
         # Create composite image from all available sources
         composite_image = None
         try:
-            # Priority: Use client frame if available, otherwise use stored frames
-            if client_frame_data:
+            # Priority: Use enhanced analysis screenshot if available
+            if enhanced_analysis and enhanced_analysis.get('screenshot'):
+                # Decode enhanced screenshot
+                screenshot_b64 = enhanced_analysis['screenshot']
+                img_bytes = base64.b64decode(screenshot_b64)
+                img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                composite_image = cv2.imdecode(img_array, flags=cv2.IMREAD_COLOR)
+            elif client_frame_data:
                 # Client sent a frame with the message
                 composite_image = create_composite_image(client_frame_data, ai_frame_data)
             elif user_frames:
@@ -657,11 +709,39 @@ def handle_chat_message(data):
             if composite_image is not None:
                 message_to_send += " [ANALYSE VISUELLE REQUISE]"
             
+            # Add enhanced analysis context
+            if enhanced_analysis:
+                text_elements = enhanced_analysis.get('text_elements', [])
+                ui_elements = enhanced_analysis.get('ui_elements', [])
+                windows = enhanced_analysis.get('windows', [])
+                
+                if text_elements:
+                    top_texts = [t['text'] for t in text_elements[:5]]  # Top 5 text elements
+                    message_to_send += f"\n[SCREEN TEXT DETECTED: {', '.join(top_texts)}]"
+                
+                if ui_elements:
+                    ui_count = len(ui_elements)
+                    message_to_send += f"\n[UI ELEMENTS: {ui_count} interactive elements detected]"
+                
+                if windows:
+                    active_windows = [w['title'] for w in windows if w.get('is_active')]
+                    if active_windows:
+                        message_to_send += f"\n[ACTIVE WINDOW: {active_windows[0]}]"
+                    
+                    window_titles = [w['title'] for w in windows[:3]]  # Top 3 windows
+                    message_to_send += f"\n[OPEN WINDOWS: {', '.join(window_titles)}]"
+            
             # Add stream context
             if active_streams:
                 message_to_send += f"\n[ACTIVE STREAMS: {', '.join(active_streams)}]"
             else:
                 message_to_send += "\n[NO ACTIVE STREAMS]"
+            
+            # Add computer control capabilities context
+            if ENHANCED_CONTROL_AVAILABLE:
+                message_to_send += "\n[ENHANCED COMPUTER CONTROL: Full screen analysis, OCR, window management, and automation available]"
+            else:
+                message_to_send += "\n[BASIC COMPUTER CONTROL: Limited to basic mouse/keyboard operations]"
 
             response = controller.chat(
                 message_to_send,
