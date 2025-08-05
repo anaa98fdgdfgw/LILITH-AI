@@ -1,0 +1,47 @@
+# Core dependencies
+opencv-python>=4.8.0
+openai>=1.0.0
+numpy>=1.24.0
+Pillow>=10.0.0
+aiohttp>=3.8.0
+flask>=2.3.0
+flask-socketio>=5.3.0
+flask-cors>=4.0.0
+gradio>=4.0.0
+
+# Computer control and automation
+pyautogui>=0.9.54
+mss>=9.0.1
+psutil>=5.9.0
+pygetwindow>=0.0.9
+pywin32>=306; sys_platform == "win32"
+pypiwin32>=223; sys_platform == "win32"
+
+# OCR and text recognition
+pytesseract>=0.3.10
+easyocr>=1.7.0
+
+# TTS and audio
+pyttsx3>=2.90
+langdetect>=1.0.9
+
+# Image processing and computer vision
+scikit-image>=0.21.0
+imutils>=0.5.4
+
+# System utilities
+keyboard>=0.13.5
+mouse>=0.7.1
+pyperclip>=1.8.2
+
+# Optional GPU support
+gputil>=1.4.0
+
+# Development and testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# MCP and API support
+python-socketio[client]>=5.8.0
+eventlet>=0.33.0
+requests>=2.31.0
