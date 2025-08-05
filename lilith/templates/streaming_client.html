@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LILITH AI - Advanced Streaming Interface</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --bg-tertiary: #2a2a2a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0a0;
+            --accent-primary: #9c88ff;
+            --accent-secondary: #7c68df;
+            --accent-info: #4fc3f7;
+            --accent-success: #4caf50;
+            --accent-error: #ff5252;
+            --border-color: #3a3a3a;
+        }
+        
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            background: var(--bg-primary); 
+            color: var(--text-primary); 
+            height: 100vh; 
+            overflow: hidden; 
+        }
+        
+        .container { 
+            display: grid; 
+            grid-template-columns: 300px 1fr 400px; 
+            height: 100vh; 
+            gap: 10px; 
+            padding: 10px; 
+        }
+        
+        .panel {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            gap: 15px;
+        }
+        
+        .vtube-panel { grid-column: 1; }
+        .main-panel { grid-column: 2; }
+        .chat-panel { grid-column: 3; overflow: hidden; }
+        
+        .panel-header {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent-primary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .vtube-stream { 
+            flex: 1; 
+            background: #000; 
+            border-radius: 8px; 
+            overflow: hidden; 
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .vtube-stream img { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+        }
+        
+        .vtube-placeholder {
+            color: var(--text-secondary);
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .streams-grid { 
+            flex: 1; 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); 
+            gap: 15px; 
+            overflow-y: auto; 
+            padding: 5px; 
+        }
+        
+        .stream-container { 
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px; 
+            height: 320px; 
+            display: flex; 
+            flex-direction: column;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .stream-container:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(156, 136, 255, 0.2);
+        }
+        
+        .stream-header { 
+            font-weight: 600; 
+            color: var(--accent-primary); 
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .stream-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-success);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .stream-video { 
+            flex: 1; 
+            background: #000; 
+            border-radius: 6px; 
+            overflow: hidden; 
+            position: relative; 
+        }
+        
+        .stream-video img { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+        }
+        
+        .chat-messages { 
+            flex: 1; 
+            overflow-y: auto; 
+            margin-bottom: 15px; 
+            padding-right: 10px; 
+        }
+        
+        .message { 
+            margin-bottom: 15px;
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message-user { 
+            color: var(--accent-info); 
+            font-weight: 600; 
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+        
+        .message-content { 
+            background: var(--bg-tertiary); 
+            padding: 12px 16px; 
+            border-radius: 8px; 
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+        
+        .message-ai .message-content { 
+            background: linear-gradient(135deg, #3a2a4a 0%, #2a2a3a 100%);
+            border-left: 3px solid var(--accent-primary); 
+        }
+        
+        .message-system {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-style: italic;
+        }
+        
+        .message-observation {
+            background: linear-gradient(135deg, #2a3a4a 0%, #2a2a3a 100%);
+            border-left: 3px solid var(--accent-info);
+            position: relative;
+        }
+        
+        .observation-badge {
+            position: absolute;
+            top: -8px;
+            right: 10px;
+            background: var(--accent-info);
+            color: white;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        
+        .chat-input-container { 
+            display: flex; 
+            gap: 10px; 
+            flex-shrink: 0; 
+        }
+        
+        .chat-input, .username-input { 
+            flex: 1; 
+            background: var(--bg-tertiary); 
+            border: 1px solid var(--border-color); 
+            border-radius: 8px; 
+            padding: 12px 16px; 
+            color: var(--text-primary); 
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        .chat-input:focus, .username-input:focus { 
+            outline: none; 
+            border-color: var(--accent-primary); 
+        }
+        
+        .send-button, .control-button { 
+            background: var(--accent-primary); 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            padding: 10px 20px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .send-button:hover, .control-button:hover { 
+            background: var(--accent-secondary);
+            transform: translateY(-1px);
+        }
+        
+        .controls { 
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px; 
+            display: flex; 
+            gap: 10px; 
+            align-items: center; 
+            flex-wrap: wrap; 
+        }
+        
+        .control-button { 
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+        
+        .control-button.active { 
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+        }
+        
+        .control-button i {
+            font-size: 16px;
+        }
+        
+        .status { 
+            position: fixed; 
+            top: 20px; 
+            right: 20px; 
+            background: var(--bg-secondary); 
+            padding: 8px 16px; 
+            border-radius: 20px; 
+            display: flex; 
+            align-items: center; 
+            gap: 10px; 
+            font-size: 13px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+        
+        .status-indicator { 
+            width: 10px; 
+            height: 10px; 
+            border-radius: 50%; 
+            background: var(--accent-error); 
+        }
+        
+        .status-indicator.connected { 
+            background: var(--accent-success); 
+        }
+        
+        .monitoring-indicator {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--bg-secondary);
+            padding: 10px 20px;
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .monitoring-indicator.active {
+            opacity: 1;
+        }
+        
+        .monitoring-indicator i {
+            color: var(--accent-info);
+            animation: blink 2s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6a6a6a; }
+        
+        /* Responsive design */
+        @media (max-width: 1200px) {
+            .container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr auto;
+            }
+            .vtube-panel { display: none; }
+            .main-panel { grid-row: 2; }
+            .chat-panel { grid-row: 3; height: 400px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="status">
+        <div class="status-indicator" id="statusIndicator"></div>
+        <span id="statusText">Disconnected</span>
+    </div>
+    
+    <div class="monitoring-indicator" id="monitoringIndicator">
+        <i class="fas fa-eye"></i>
+        <span>Dynamic Monitoring Active</span>
+    </div>
+    
+    <div class="container">
+        <div class="panel vtube-panel">
+            <div class="panel-header">
+                <i class="fas fa-video"></i>
+                <span>VTube Studio</span>
+            </div>
+            <div class="vtube-stream" id="vtubeStream">
+                <img id="vtubeImage" style="display: none;">
+                <div class="vtube-placeholder" id="vtubePlaceholder">
+                    <i class="fas fa-user-circle" style="font-size: 48px; margin-bottom: 10px;"></i>
+                    <p>VTube Studio not connected</p>
+                </div>
+            </div>
+            <button class="control-button" id="toggleVtube">
+                <i class="fas fa-play"></i>
+                <span>Start VTube Stream</span>
+            </button>
+        </div>
+        
+        <div class="panel main-panel">
+            <div class="controls">
+                <input type="text" class="username-input" id="usernameInput" placeholder="Enter your name">
+                <button class="control-button" id="joinButton">
+                    <i class="fas fa-sign-in-alt"></i>
+                    <span>Join</span>
+                </button>
+                <button class="control-button" id="shareScreenButton" disabled>
+                    <i class="fas fa-desktop"></i>
+                    <span>Share Screen</span>
+                </button>
+                <button class="control-button" id="toggleAiScreen">
+                    <i class="fas fa-robot"></i>
+                    <span>AI Screen</span>
+                </button>
+                <button class="control-button" id="toggleTTS">
+                    <i class="fas fa-volume-up"></i>
+                    <span>TTS</span>
+                </button>
+                <button class="control-button" id="toggleMonitoring">
+                    <i class="fas fa-eye"></i>
+                    <span>Monitor</span>
+                </button>
+            </div>
+            <div class="streams-grid" id="streamsGrid">
+                <div style="text-align: center; color: var(--text-secondary); padding: 40px;">
+                    <i class="fas fa-broadcast-tower" style="font-size: 48px; margin-bottom: 10px;"></i>
+                    <p>No active streams</p>
+                    <p style="font-size: 14px;">Share your screen or enable AI screen to start streaming</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="panel chat-panel">
+            <div class="panel-header">
+                <i class="fas fa-comments"></i>
+                <span>Chat with LILITH</span>
+            </div>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-container">
+                <input type="text" class="chat-input" id="chatInput" placeholder="Type your message..." disabled>
+                <button class="send-button" id="sendButton" disabled>
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+    <script>
+        const socket = io();
+        let username = '';
+        let joined = false;
+        let sharingScreen = false;
+        let localStream = null;
+        let localVideoElement = null;
+        let ttsEnabled = true;
+        let monitoringEnabled = false;
+        let activeStreams = 0;
+
+        const $ = (id) => document.getElementById(id);
+        const statusIndicator = $('statusIndicator');
+        const statusText = $('statusText');
+        const usernameInput = $('usernameInput');
+        const joinButton = $('joinButton');
+        const shareScreenButton = $('shareScreenButton');
+        const toggleAiScreen = $('toggleAiScreen');
+        const toggleVtube = $('toggleVtube');
+        const toggleTTS = $('toggleTTS');
+        const toggleMonitoring = $('toggleMonitoring');
+        const chatMessages = $('chatMessages');
+        const chatInput = $('chatInput');
+        const sendButton = $('sendButton');
+        const streamsGrid = $('streamsGrid');
+        const vtubeImage = $('vtubeImage');
+        const vtubePlaceholder = $('vtubePlaceholder');
+        const monitoringIndicator = $('monitoringIndicator');
+
+        const addMessage = (user, content, isAI = false, isObservation = false, isSystem = false) => {
+            const div = document.createElement('div');
+            
+            if (isSystem) {
+                div.className = 'message message-system';
+                div.innerHTML = content;
+            } else {
+                div.className = `message ${isAI ? 'message-ai' : ''} ${isObservation ? 'message-observation' : ''}`;
+                div.innerHTML = `
+                    <div class="message-user">${user}</div>
+                    <div class="message-content">
+                        ${isObservation ? '<span class="observation-badge">AI Observation</span>' : ''}
+                        ${content}
+                    </div>
+                `;
+            }
+            
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        };
+
+        const updateStream = (id, title, frameData) => {
+            // Remove placeholder if it exists
+            const placeholder = streamsGrid.querySelector('div[style*="text-align: center"]');
+            if (placeholder) placeholder.remove();
+            
+            let container = $(id);
+            if (!container) {
+                container = document.createElement('div');
+                container.id = id;
+                container.className = 'stream-container';
+                container.innerHTML = `
+                    <div class="stream-header">
+                        <span class="stream-status"></span>
+                        <span>${title}</span>
+                    </div>
+                    <div class="stream-video"><img></div>
+                `;
+                streamsGrid.appendChild(container);
+                activeStreams++;
+            }
+            container.querySelector('img').src = `data:image/jpeg;base64,${frameData}`;
+        };
+        
+        const removeStream = (id) => {
+            const stream = $(id);
+            if (stream) {
+                stream.remove();
+                activeStreams--;
+                
+                // Show placeholder if no streams
+                if (activeStreams === 0) {
+                    streamsGrid.innerHTML = `
+                        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">
+                            <i class="fas fa-broadcast-tower" style="font-size: 48px; margin-bottom: 10px;"></i>
+                            <p>No active streams</p>
+                            <p style="font-size: 14px;">Share your screen or enable AI screen to start streaming</p>
+                        </div>
+                    `;
+                }
+            }
+        };
+        
+        const startScreenShare = async () => {
+            try {
+                localStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
+                localVideoElement = document.createElement('video');
+                localVideoElement.srcObject = localStream;
+                localVideoElement.play();
+                sharingScreen = true;
+                shareScreenButton.textContent = 'Stop Sharing';
+                shareScreenButton.classList.add('active');
+                localStream.getVideoTracks()[0].onended = stopScreenShare;
+
+            
+                // Start sending frames to the server
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const sendFrame = () => {
+                    if (!sharingScreen) return;
+                    canvas.width = localVideoElement.videoWidth;
+                    canvas.height = localVideoElement.videoHeight;
+                    ctx.drawImage(localVideoElement, 0, 0);
+                    const frame = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+                    socket.emit('client_screen_frame', { frame });
+                    setTimeout(sendFrame, 100); // 10 FPS
+                };
+                localVideoElement.onloadedmetadata = sendFrame;
+
+            } catch (err) { console.error('Error starting screen share:', err); }
+        };
+
+        const stopScreenShare = () => {
+            if (localStream) localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+            localVideoElement = null;
+            sharingScreen = false;
+            shareScreenButton.textContent = 'Share Screen';
+            shareScreenButton.classList.remove('active');
+            const myStream = $(`user-${username}`);
+            if(myStream) myStream.remove();
+        };
+
+        const sendMessage = () => {
+            const message = chatInput.value.trim();
+            if (!message) return;
+            
+            let clientFrame = null;
+            if (sharingScreen && localVideoElement) {
+                const canvas = document.createElement('canvas');
+                canvas.width = localVideoElement.videoWidth;
+                canvas.height = localVideoElement.videoHeight;
+                canvas.getContext('2d').drawImage(localVideoElement, 0, 0);
+                clientFrame = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            }
+
+            let aiFrame = null;
+            const aiImg = document.querySelector('#ai-screen img');
+            if (aiImg && aiImg.src.startsWith('data:image')) {
+                aiFrame = aiImg.src.split(',')[1];
+            }
+
+            socket.emit('chat_message', { message, client_frame: clientFrame, ai_frame: aiFrame, tts_enabled: ttsEnabled });
+            chatInput.value = '';
+        };
+
+        // Socket event handlers
+        socket.on('connect', () => { 
+            statusIndicator.classList.add('connected'); 
+            statusText.textContent = 'Connected'; 
+        });
+        
+        socket.on('disconnect', () => { 
+            statusIndicator.classList.remove('connected'); 
+            statusText.textContent = 'Disconnected'; 
+        });
+        
+        socket.on('joined', (data) => {
+            joined = true; 
+            username = data.username;
+            [shareScreenButton, chatInput, sendButton].forEach(el => el.disabled = false);
+            data.chat_history.forEach(msg => {
+                addMessage(
+                    msg.role === 'user' ? msg.username : 'LILITH AI', 
+                    msg.content, 
+                    msg.role === 'assistant'
+                );
+            });
+        });
+        
+        socket.on('user_joined', (data) => addMessage('System', `${data.username} joined the chat`, false, false, true));
+        
+        socket.on('user_left', (data) => { 
+            addMessage('System', `${data.username} left the chat`, false, false, true); 
+            removeStream(`user-${data.username}`);
+        });
+        
+        socket.on('chat_message', (data) => addMessage(data.username, data.message, false));
+        
+        socket.on('ai_response', (data) => addMessage('LILITH AI', data.message, true));
+        
+        socket.on('ai_observation', (data) => {
+            addMessage('LILITH AI', data.message, true, true);
+        });
+        
+        socket.on('ai_screen_frame', (data) => updateStream('ai-screen', 'AI Screen', data.frame));
+        
+        socket.on('vtube_frame', (data) => { 
+            vtubeImage.src = `data:image/jpeg;base64,${data.frame}`; 
+            vtubeImage.style.display = 'block';
+            vtubePlaceholder.style.display = 'none';
+        });
+        
+        socket.on('user_screen_frame', (data) => updateStream(`user-${data.username}`, `${data.username}'s Screen`, data.frame));
+        
+        socket.on('ai_stream_suggestion', (data) => {
+            addMessage('System', `AI suggests to ${data.action} ${data.stream_type}: ${data.reason}`, false, false, true);
+        });
+
+        // Button handlers
+        joinButton.onclick = () => {
+            const name = usernameInput.value.trim() || `User_${Math.floor(Math.random() * 1000)}`;
+            socket.emit('join', { username: name });
+            joinButton.disabled = true; 
+            usernameInput.disabled = true;
+        };
+        
+        shareScreenButton.onclick = () => {
+            if (sharingScreen) {
+                stopScreenShare();
+            } else {
+                startScreenShare();
+            }
+            shareScreenButton.innerHTML = sharingScreen ? 
+                '<i class="fas fa-desktop"></i><span>Share Screen</span>' : 
+                '<i class="fas fa-stop"></i><span>Stop Sharing</span>';
+        };
+        
+        toggleAiScreen.onclick = () => {
+            const enabled = toggleAiScreen.classList.toggle('active');
+            socket.emit('toggle_ai_screen', { enabled });
+            if (!enabled) {
+                removeStream('ai-screen');
+            }
+        };
+        
+        toggleVtube.onclick = () => {
+            const enabled = toggleVtube.classList.toggle('active');
+            toggleVtube.innerHTML = enabled ? 
+                '<i class="fas fa-stop"></i><span>Stop VTube Stream</span>' : 
+                '<i class="fas fa-play"></i><span>Start VTube Stream</span>';
+            socket.emit('toggle_vtube_stream', { enabled });
+            
+            if (!enabled) {
+                vtubeImage.style.display = 'none';
+                vtubePlaceholder.style.display = 'flex';
+            }
+        };
+        
+        toggleTTS.onclick = () => { 
+            ttsEnabled = !ttsEnabled;
+            toggleTTS.classList.toggle('active', ttsEnabled);
+            toggleTTS.innerHTML = ttsEnabled ? 
+                '<i class="fas fa-volume-up"></i><span>TTS</span>' : 
+                '<i class="fas fa-volume-mute"></i><span>TTS</span>';
+        };
+        
+        toggleMonitoring.onclick = () => {
+            monitoringEnabled = !monitoringEnabled;
+            toggleMonitoring.classList.toggle('active', monitoringEnabled);
+            monitoringIndicator.classList.toggle('active', monitoringEnabled);
+            socket.emit('toggle_dynamic_monitoring', { enabled: monitoringEnabled });
+        };
+        
+        sendButton.onclick = sendMessage;
+        chatInput.onkeypress = (e) => { if (e.key === 'Enter') sendMessage(); };
+        usernameInput.onkeypress = (e) => { if (e.key === 'Enter') joinButton.click(); };
+        
+        // Set initial states
+        toggleTTS.classList.add('active');
+        
+        // Auto-enable monitoring after joining
+        socket.on('joined', () => {
+            setTimeout(() => {
+                if (!monitoringEnabled) {
+                    toggleMonitoring.click();
+                }
+            }, 3000);
+        });
+    </script>
+</body>
+</html>
