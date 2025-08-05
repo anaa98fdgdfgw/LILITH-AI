@@ -32,6 +32,7 @@ required = [
     "numpy",
     "Pillow",
     "mss",
+    "pynput", 
     "psutil",
     "aiohttp",
     "flask",
@@ -51,6 +52,7 @@ try:
     import numpy
     import PIL
     import mss
+    import pynput
     import psutil
     import flask
     import flask_socketio
@@ -69,6 +71,29 @@ for pkg in optional:
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except:
         pass
+
+# Run enhanced diagnostics
+print("🔍 Running enhanced system diagnostics...")
+try:
+    from lilith.diagnostics import LilithDiagnostics
+    diagnostics = LilithDiagnostics()
+    diag_results = diagnostics.run_full_diagnostic()
+    
+    if diag_results["overall_status"] == "critical":
+        print("❌ CRITICAL ISSUES DETECTED!")
+        print(diag_results["summary"])
+        print("\n💡 For detailed diagnostics, run: python -m lilith.diagnostics")
+        input("Press Enter to continue anyway, or Ctrl+C to abort...")
+    elif diag_results["overall_status"] == "warning":
+        print("⚠️ Some capabilities may be limited:")
+        print(diag_results["summary"])
+        print("\n💡 For detailed diagnostics, run: python -m lilith.diagnostics")
+    else:
+        print("✅ All vision and control systems operational!")
+        
+except Exception as e:
+    print(f"⚠️ Diagnostics failed: {e}")
+    print("   Continuing without full verification...")
 
 # Install streaming dependencies
 streaming_deps = ["flask", "flask-socketio", "flask-cors", "pyttsx3", "pywin32", "pypiwin32", "langdetect"]
