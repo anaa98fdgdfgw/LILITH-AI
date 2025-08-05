@@ -156,7 +156,8 @@ RULES:
     #  Helpers
     # ------------------------------------------------------------------
     def _encode_image(self, frame: np.ndarray) -> str:
-        _, buf = cv2.imencode(".jpg", frame)
+        """Encode image with 100% JPEG quality - NO resizing to preserve complete vision."""
+        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
         return base64.b64encode(buf).decode()
 
     def _llm_complete(self, messages: list, max_tokens: int, temperature: float):
@@ -214,24 +215,9 @@ RULES:
                     if name == "type_text":
                         type_text(**args)
                         results.append("⌨️ Typed.")
-                    elif cmd["action"] == "click":
-                    xs, ys = cmd["params"].split()[:2]
-
-                     # ───────────  NOUVEAU  ───────────
-                    import pyautogui
-                    scr_w, scr_h = pyautogui.size()          # taille du bureau virtuel
-                    x = float(xs)
-                    y = float(ys)
-                    # si les valeurs sont des ratios 0-1, on les projette en pixels
-                    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
-                        x *= scr_w
-                        y *= scr_h
-                     x = int(round(x))
-                     y = int(round(y))
-                     # ─────────────────────────────────
-
-                     await mcp_mouse_click(x, y)
-                     return f"🖱️ **Clicked at:** ({x}, {y})"
+                    elif name == "click_screen":
+                        click_screen(**args)
+                        results.append("🖱️ Clicked.")
                     elif name == "move_mouse":
                         move_mouse(**args)
                         results.append("↔️ Moved.")
