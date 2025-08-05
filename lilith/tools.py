@@ -5,6 +5,7 @@ import subprocess
 import os
 import sys
 import json
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import tempfile
@@ -393,6 +394,188 @@ class LilithTools:
                 "success": False,
                 "error": f"Enhanced keyboard control failed: {str(e)}",
                 "method": "error"
+            }
+    
+    def setup_video_streaming(self, output_format: str = "mjpeg", fps: int = 30, quality: int = 80) -> Dict[str, Any]:
+        """
+        Setup video streaming capabilities for continuous screen capture.
+        
+        Args:
+            output_format: "mjpeg", "h264", "avi", "mp4"
+            fps: Frames per second
+            quality: Video quality (0-100)
+        """
+        try:
+            if not CV2_AVAILABLE:
+                return {
+                    "success": False,
+                    "error": "OpenCV not available for video streaming",
+                    "install_command": "pip install opencv-python"
+                }
+            
+            # Get screen dimensions
+            capabilities = self.get_vision_capabilities()
+            if not capabilities["monitors"]:
+                return {
+                    "success": False,
+                    "error": "No monitors detected for streaming"
+                }
+            
+            # Use primary monitor or all monitors
+            monitor = capabilities["monitors"][1] if len(capabilities["monitors"]) > 1 else capabilities["monitors"][0]
+            width, height = monitor["width"], monitor["height"]
+            
+            # Setup video codec
+            fourcc_map = {
+                "mjpeg": cv2.VideoWriter_fourcc(*'MJPG'),
+                "h264": cv2.VideoWriter_fourcc(*'H264'), 
+                "avi": cv2.VideoWriter_fourcc(*'XVID'),
+                "mp4": cv2.VideoWriter_fourcc(*'mp4v')
+            }
+            
+            fourcc = fourcc_map.get(output_format, cv2.VideoWriter_fourcc(*'MJPG'))
+            
+            # Create output filename
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = self.workspace / f"lilith_stream_{timestamp}.{output_format}"
+            
+            # Setup video writer
+            video_writer = cv2.VideoWriter(
+                str(output_file),
+                fourcc,
+                fps,
+                (width, height)
+            )
+            
+            if not video_writer.isOpened():
+                return {
+                    "success": False,
+                    "error": f"Failed to open video writer for {output_format}"
+                }
+            
+            return {
+                "success": True,
+                "video_writer": video_writer,
+                "output_file": str(output_file),
+                "format": output_format,
+                "fps": fps,
+                "resolution": (width, height),
+                "quality": quality
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Video streaming setup failed: {str(e)}"
+            }
+    
+    def capture_video_frame(self, video_config: Dict[str, Any], monitor: int = 0) -> Dict[str, Any]:
+        """
+        Capture a single frame for video streaming.
+        
+        Args:
+            video_config: Configuration returned by setup_video_streaming()
+            monitor: Monitor to capture (0=all, 1+=specific)
+        """
+        try:
+            if not video_config.get("success"):
+                return {"success": False, "error": "Invalid video configuration"}
+            
+            # Take screenshot
+            screenshot_result = self.enhanced_screenshot(monitor=monitor, format="numpy")
+            if not screenshot_result["success"]:
+                return {
+                    "success": False,
+                    "error": f"Screenshot failed: {screenshot_result.get('error', 'Unknown error')}"
+                }
+            
+            frame = screenshot_result["image"]
+            video_writer = video_config["video_writer"]
+            
+            # Resize frame if needed to match video resolution
+            target_resolution = video_config["resolution"]
+            if frame.shape[:2][::-1] != target_resolution:  # OpenCV uses (height, width)
+                frame = cv2.resize(frame, target_resolution)
+            
+            # Write frame to video
+            video_writer.write(frame)
+            
+            return {
+                "success": True,
+                "frame_written": True,
+                "frame_size": frame.shape,
+                "timestamp": time.time()
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Video frame capture failed: {str(e)}"
+            }
+    
+    def stream_screen_to_file(self, duration: int = 10, monitor: int = 0, 
+                             output_format: str = "mjpeg", fps: int = 30) -> Dict[str, Any]:
+        """
+        Stream screen to video file for specified duration.
+        
+        Args:
+            duration: Duration in seconds
+            monitor: Monitor to capture
+            output_format: Video format
+            fps: Frames per second
+        """
+        try:
+            import time
+            
+            # Setup video streaming
+            video_config = self.setup_video_streaming(output_format, fps)
+            if not video_config["success"]:
+                return video_config
+            
+            video_writer = video_config["video_writer"]
+            start_time = time.time()
+            frame_count = 0
+            
+            print(f"🎬 Recording screen for {duration} seconds...")
+            print(f"📹 Output: {video_config['output_file']}")
+            print(f"⚙️ Format: {output_format} @ {fps}fps")
+            
+            while time.time() - start_time < duration:
+                frame_start = time.time()
+                
+                # Capture frame
+                frame_result = self.capture_video_frame(video_config, monitor)
+                if frame_result["success"]:
+                    frame_count += 1
+                    
+                    # Progress indicator
+                    if frame_count % (fps * 2) == 0:  # Every 2 seconds
+                        elapsed = time.time() - start_time
+                        print(f"📹 Recording... {elapsed:.1f}s / {duration}s ({frame_count} frames)")
+                
+                # Maintain FPS
+                frame_time = time.time() - frame_start
+                sleep_time = (1.0 / fps) - frame_time
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            
+            # Cleanup
+            video_writer.release()
+            
+            return {
+                "success": True,
+                "output_file": video_config["output_file"],
+                "duration": time.time() - start_time,
+                "frame_count": frame_count,
+                "average_fps": frame_count / (time.time() - start_time),
+                "format": output_format
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Screen streaming failed: {str(e)}"
             }
         
     def execute_python(self, code: str, timeout: int = 10) -> Dict[str, str]:

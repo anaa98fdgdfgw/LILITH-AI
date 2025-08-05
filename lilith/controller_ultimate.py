@@ -147,7 +147,7 @@ class LilithControllerUltimate:
     ) -> list[dict]:
         """Construit le prompt system + user (version abrégée pour lisibilité)."""
         system_prompt = f"""You are Lilith (personality: {personality})
-schema_version: 0.3
+schema_version: 0.4
 TOOLS:
 - execute_python(code, timeout)
 - execute_command(command, timeout)
@@ -156,11 +156,13 @@ TOOLS:
 - click_screen(x,y | x_rel,y_rel, button)
 - move_mouse(x,y | x_rel,y_rel, duration)
 - take_screenshot()
+- stream_screen(duration, monitor, format, fps)
 
 RULES:
 • When calling a tool, reply ONLY with the JSON object {{ "name": "...", "arguments": {{...}} }}.
 • No other text in that message.
 • Use x_rel / y_rel (0-1) when derived from an image.
+• stream_screen captures video: duration=seconds, monitor=0 (all) or 1+ (specific), format="mjpeg"|"h264", fps=30.
 """
         messages = [{"role": "system", "content": system_prompt}]
         content_block = [{"type": "text", "text": user_msg}]
@@ -243,6 +245,18 @@ RULES:
                     elif name == "take_screenshot":
                         img = take_screenshot()
                         results.append(f"📸 Screenshot captured ({len(img)//1024} KB).")
+                    elif name == "stream_screen":
+                        # New video streaming capability
+                        duration = args.get("duration", 10)
+                        monitor = args.get("monitor", 0)
+                        output_format = args.get("format", "mjpeg")
+                        fps = args.get("fps", 30)
+                        
+                        stream_result = self.tools.stream_screen_to_file(duration, monitor, output_format, fps)
+                        if stream_result["success"]:
+                            results.append(f"🎬 Screen recorded for {stream_result['duration']:.1f}s → {stream_result['output_file']}")
+                        else:
+                            results.append(f"❌ Recording failed: {stream_result['error']}")
                     else:
                         results.append(f"⚠️ Unknown tool '{name}'.")
                 except Exception as e:
