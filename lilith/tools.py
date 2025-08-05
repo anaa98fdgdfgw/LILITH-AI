@@ -330,3 +330,36 @@ class LilithTools:
                 "project_count": 0,
                 "error": str(e)
             }
+import json as _json, urllib.request as _u, urllib.error as _ue
+
+_AB498_URL = "http://127.0.0.1:3011/rpc"
+
+def _ab498_rpc(method: str, params: dict | None = None):
+    payload = _json.dumps(
+        {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1}
+    ).encode()
+    req = _u.Request(_AB498_URL, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with _u.urlopen(req, timeout=5) as resp:
+            data = _json.load(resp)
+            if data.get("error"):
+                raise RuntimeError(data["error"])
+            return data.get("result", {})
+    except _ue.URLError as exc:
+        raise RuntimeError(f"AB498 control server unreachable: {exc}") from exc
+
+def type_text(text: str, interval: float = 0.0) -> bool:
+    _ab498_rpc("type_text", {"text": text, "interval": interval}); return True
+
+def click_screen(*, x: int | None = None, y: int | None = None,
+                 x_rel: float | None = None, y_rel: float | None = None,
+                 button: str = "left") -> bool:
+    _ab498_rpc("click_screen", {"x": x, "y": y, "x_rel": x_rel, "y_rel": y_rel, "button": button}); return True
+
+def move_mouse(*, x: int | None = None, y: int | None = None,
+               x_rel: float | None = None, y_rel: float | None = None,
+               duration: float = 0.2) -> bool:
+    _ab498_rpc("move_mouse", {"x": x, "y": y, "x_rel": x_rel, "y_rel": y_rel, "duration": duration}); return True
+
+def take_screenshot() -> str:
+    return _ab498_rpc("take_screenshot").get("image", "")
